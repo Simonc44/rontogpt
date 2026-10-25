@@ -153,10 +153,10 @@ if ($ContenuProfil -notmatch [regex]::Escape("# === RontoGPT")) {
 # 4 bis. Dependances lourdes manquantes + raccourci + config
 # ---------------------------------------------------------------
 # Le bloc 3 installait la base (numpy...) : ici on ajoute ce qui est
-# indispensable pour que `python -m aura.gui_web` et le cerveau
+# indispensable pour que `python -m aura` (interface terminal) et le cerveau
 # fonctionnent reels — roue CPU officielle pour llama-cpp-python.
-Write-Host "[..] Cerveau + interface (llama-cpp-python, pywebview)..."
-& $VenvPy -m pip install --quiet "huggingface-hub>=0.25" "pywebview>=6.0" `
+Write-Host "[..] Cerveau (llama-cpp-python)..."
+& $VenvPy -m pip install --quiet "huggingface-hub>=0.25" `
     "llama-cpp-python==0.3.2" `
     --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu/
 if ($LASTEXITCODE -ne 0) {
@@ -174,7 +174,7 @@ $Bat = Join-Path $Destination "Lancer RontoGPT.bat"
 @"
 @echo off
 cd /d "$Destination"
-".venv\Scripts\python.exe" -m aura.gui_web %*
+".venv\Scripts\python.exe" -m aura %*
 pause
 "@ | Set-Content -Path $Bat -Encoding ascii
 try {
@@ -210,7 +210,7 @@ Write-Host ""
 Write-Host "=== Installation terminee ===" -ForegroundColor Cyan
 Write-Host "Ouvre une NOUVELLE fenetre PowerShell puis :"
 Write-Host '  aura "quel est le carre de 7"'
-Write-Host "Ou double-clique sur le raccourci 'RontoGPT' du Bureau (interface graphique)."
+Write-Host "Ou double-clique sur le raccourci 'RontoGPT' du Bureau (interface terminal)."
 Write-Host "Pour voir si une mise a jour existe :"
 Write-Host "  & `$Destination\.venv\Scripts\python.exe -m aura.maj"
 if (-not $Silencieux) { Read-Host "Entree pour fermer" }

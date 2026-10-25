@@ -28,6 +28,7 @@ Usage orchestrateur :
     hit   = memoire.rechercher("Pierre")  # outil RLM (recherche fichier)
 """
 import json
+import os
 import re
 import threading
 import time
@@ -69,9 +70,12 @@ class MemoireConversation:
         # a chaque extraction. Le nom de l'utilisateur survit aux sessions.
         self._chemin_etat = self._chemin.with_suffix(".etat.json")
         self._etat: dict[str, str] = self._charger_etat()
-        # Recharge seulement la petite fenetre recente. L'historique complet
-        # reste sur disque pour l'outil RLM; le prompt ne grossit pas sans borne.
-        self._tours: list[dict[str, str]] = self._charger_fenetre()
+        # Une session commence neuve : l'historique complet reste disponible
+        # via l'outil RLM, mais il ne doit pas reapparaitre dans le chat apres
+        # chaque redemarrage. AURA_REPRENDRE_CONVERSATION=1 restaure le
+        # comportement historique pour les personnes qui le souhaitent.
+        reprendre = os.environ.get("AURA_REPRENDRE_CONVERSATION", "").strip() == "1"
+        self._tours: list[dict[str, str]] = self._charger_fenetre() if reprendre else []
         # outil RLM declare pour le prompt systeme
         self.outil_disponible = True
 
@@ -333,6 +337,39 @@ class MemoireConversation:
         with self._verrou:
             return dict(self._etat)
 
+    # -- memoire VISIBLE et EDITABLE ----------------------------------------
+    # L'etat civil est injecte dans le prompt a chaque tour : l'utilisateur doit
+    # pouvoir le lire ET le corriger (une regex peut se tromper : « je suis
+    # fatigue » ne fait pas de lui « fatigue »). Cles et valeurs sont bornees :
+    # elles partent dans le prompt du 1B.
+    _MAX_CLE = 40
+    _MAX_VALEUR = 120
+
+    def definir_etat(self, cle: str, valeur: str) -> tuple[str, str]:
+        """Ajoute ou corrige une entree de l'etat civil. Rend (cle, valeur).
+
+        ValueError si la cle ou la valeur est vide apres nettoyage.
+        """
+        cle = re.sub(r"\s+", " ", str(cle or "")).strip()[:self._MAX_CLE]
+        valeur = re.sub(r"\s+", " ", str(valeur or "")).strip()[:self._MAX_VALEUR]
+        if not cle or not valeur:
+            raise ValueError("une cle et une valeur non vides sont requises")
+        with self._verrou:
+            self._etat[cle] = valeur
+            self._sauver_etat()
+        return cle, valeur
+
+    def oublier_etat(self, cle: str) -> bool:
+        """Retire une entree (insensible a la casse). False si elle n'existe pas."""
+        cible = str(cle or "").strip().lower()
+        with self._verrou:
+            for existante in list(self._etat):
+                if existante.lower() == cible:
+                    del self._etat[existante]
+                    self._sauver_etat()
+                    return True
+        return False
+
     # -- integration ancres + fenetre ----------------------------------------
 
     def bloc_systeme(self, systeme: str | None) -> str | None:
@@ -366,6 +403,45 @@ class MemoireConversation:
             self._tours.clear()
             self._etat.clear()
             self._sauver_etat()
+
+    def compacter(self, garder: int = 0) -> int:
+        """Compacte la fenetre : oublie les tours bruts, GARDE l'etat civil.
+
+        Difference avec `vider` : le nom, les preferences et les faits
+        durables (etat evenementiel) survivent — seule la matiere brute
+        (questions/reponses) est jetee. L'historique fichier RLM reste
+        intact, donc l'outil de recherche retrouve toujours l'ancien.
+
+        `garder` : nombre de messages RECENTS a conserver (0 = tout jeter,
+        comportement de `/compact`). La compaction automatique garde le
+        dernier echange pour que « et lui ? » ait encore un referent.
+        Renvoie le nombre de messages retires.
+        """
+        with self._verrou:
+            garder = max(0, int(garder))
+            if garder >= len(self._tours):
+                return 0
+            n = len(self._tours) - garder
+            self._tours = (self._tours[-garder:] if garder else [])
+            return n
+
+    def compacter_en_gardant(self, indices: list[int]) -> int:
+        """Compacte en ne gardant que CERTAINS messages (ordre chronologique).
+
+        Le mode `importance` (aura/contexte.py) choisit les echanges a
+        conserver ; contrairement a `compacter(garder=N)`, la selection n'est
+        pas forcement un suffixe contigu (un vieil echange utile peut survivre
+        a des echanges recents banals). Le fichier RLM reste intact.
+        Renvoie le nombre de messages retires.
+        """
+        with self._verrou:
+            propres = sorted({int(i) for i in indices
+                              if 0 <= int(i) < len(self._tours)})
+            if len(propres) == len(self._tours):
+                return 0
+            n = len(self._tours) - len(propres)
+            self._tours = [self._tours[i] for i in propres]
+            return n
 
     def tourner(self, question: str) -> str | None:
         """Applique l'outil RLM si la question demande l'historique.

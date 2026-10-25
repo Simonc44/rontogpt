@@ -21,8 +21,10 @@ import time
 import urllib.request
 from pathlib import Path
 
+from aura.llama_cerveau import chemin_gguf
+
 _RACINE = Path(__file__).resolve().parent.parent
-_GGUF = _RACINE / "modeles" / "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+_GGUF = Path(chemin_gguf())   # cerveau par defaut (plus de nom en dur)
 _BIN = _RACINE / "serveur" / "llama-server.exe"
 
 # "repétitif" = sortie LITTERALEMENT identique a chaque ligne : c'est le seul

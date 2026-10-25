@@ -2,6 +2,13 @@
 
 > Relevé sur la machine réelle (HP ProBook 440 G10), 6 octobre 2026.
 > Chiffres **mesurés** sauf mention « estimation » ou « mesure antérieure ».
+>
+> **Mise à jour du 24 octobre 2026** : le cerveau par défaut est désormais
+> `modeles/gemma-3-1b-it-Q8_0.gguf` (gemma3, 1,07 Go). Les GGUF Heretic Q4,
+> Llama 3.2 et R1-Distill ont été supprimés du disque ; les chiffres de débit
+> et les chemins ci-dessous qui les citent sont donc historiques.
+> Pour l'analyse de marché et l'architecture **cible**, voir
+> `docs/ETUDE_MARCHE_ET_ARCHITECTURE_2026-10.md`.
 
 ---
 

@@ -17,7 +17,7 @@ FER = "<" "/think>"
 
 class TestSeparationPenseeReponse:
     def test_reflexion_native_gemma_extracte(self):
-        """Format du cerveau par defaut : Gemma-3 Heretic Thinking."""
+        """Format d'un cerveau a reflexion native (Gemma Heretic, R1...)."""
         brut = (f"{OUV}2 plus 2 font 4. Je verifie : oui.{FER}"
                 "2 plus 2 font 4.")
         propre, reflexion = llama_cerveau.separer_reflexion(brut)

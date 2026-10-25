@@ -266,9 +266,8 @@ class FenetreRontoGPT(tk.Tk):
                          font=(_POLICE, 34, "bold"))
         tk.Label(centre, text="Bonjour !", bg=_FOND_APP, fg=_TEXTE,
                  font=(_POLICE, 22, "bold")).pack(pady=(14, 0))
-        tk.Label(centre, text="Je suis RontoGPT. Posez-moi une question.",
-                 bg=_FOND_APP, fg=_TEXTE_FAIBLE,
-                 font=(_POLICE, 13)).pack(pady=(6, 0))
+        # Pas de phrase sous le logo : l'identite ne s'affiche que dans la
+        # reponse a une question sur le modele.
 
         self._journal = tk.Text(
             chat, bg=_FOND_APP, fg=_TEXTE, wrap="word", relief="flat",

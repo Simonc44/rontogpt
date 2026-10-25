@@ -15,12 +15,24 @@ import json
 import logging
 import os
 import platform
+import sys
 
 LOG = logging.getLogger(__name__)
 
 
 def _cpu_windows() -> dict:
-    """Modele + coeurs physiques via l'API Windows (zero dependance)."""
+    """Modele + coeurs physiques via l'API Windows (zero dependance).
+
+    Le controle de plateforme est ecrit avec `sys.platform`, et NON `os.name` :
+    mypy ne LIT meme pas ce qui suit quand la plateforme analysee n'est pas
+    Windows, alors que les stubs Linux n'ont ni `ctypes.windll` ni `winreg` —
+    les `attr-defined` qui en decoulaient rougissaient le job `mypy` de la CI
+    (11 erreurs mesurees le 16 oct. 2026) pendant que le meme `mypy aura/`
+    rendait 0 sur un poste Windows. Le comportement ne change pas : `profiler()`
+    n'appelle cette fonction que sous Windows (`_cpu_linux` sinon).
+    """
+    if sys.platform != "win32":
+        return {"modele": platform.processor() or "CPU", "coeurs_physiques": 0}
     info = {"modele": platform.processor() or "CPU", "coeurs_physiques": 0}
     try:
         import ctypes
@@ -89,7 +101,9 @@ def _cpu_linux() -> dict:
 
 def ram_octets() -> int:
     """RAM totale en octets (zero dependance)."""
-    if os.name == "nt":
+    # `sys.platform` (que mypy comprend) et non `os.name` : ce bloc n'est lu
+    # que sous Windows, ou `ctypes.windll` existe.
+    if sys.platform == "win32":
         # GlobalMemoryStatusEx via ctypes
         try:
             import ctypes
@@ -132,7 +146,8 @@ def disk_libre_octets(path: str | None = None) -> int:
 
 def _a_avx2() -> bool:
     """Support AVX2 (accélération llama.cpp) — via cpuid sur Windows."""
-    if os.name != "nt":
+    # `sys.platform` : sous Linux, mypy ne lit donc pas le `winreg` qui suit.
+    if sys.platform != "win32":
         try:
             return "avx2" in open("/proc/cpuinfo", encoding="utf-8",
                                   errors="replace").read()
@@ -190,10 +205,25 @@ def reglages_optimaux(profil: dict | None = None) -> dict:
     ram_go = profil.get("ram_go") or 4
 
     threads = logiques
-    if ram_go >= 6:
-        ctx, batch = 4096, 768
+    # FENETRE : le cerveau par defaut (Gemma 3 1B) accepte jusqu'a 32 K tokens ;
+    # la figer a 4096 bornait inutilement la memoire de conversation. Le cache
+    # KV q8_0 d'un modele de ~1 Md de parametres coute de l'ordre de 15 Ko par
+    # token : 8192 tokens ~ 120 Mo, 32768 ~ 0,5 Go. Seul le prefill du prompt
+    # REELLEMENT envoye coute du temps, pas la taille de la fenetre.
+    if ram_go >= 8:
+        # Gemma 3 1B sait traiter 32 K : avec le KV q8_0 cela reste de
+        # l'ordre d'un demi-Go. C'est le meilleur levier de memoire utile sur
+        # une machine normale, sans rendre les petits prompts plus lents.
+        ctx, batch = 32768, 768
+    elif ram_go >= 6:
+        ctx, batch = 8192, 768
     else:
         ctx, batch = 1024, 512
+    # Surcharge explicite (AURA_N_CTX=16384, 32768...) : l'utilisateur sait
+    # ce que sa machine encaisse. Borne : 512 a 131072, jamais un negatif.
+    brut = os.environ.get("AURA_N_CTX", "").strip()
+    if brut.isdigit():
+        ctx = max(512, min(int(brut), 131072))
 
     return {
         "n_threads": threads,
@@ -205,6 +235,24 @@ def reglages_optimaux(profil: dict | None = None) -> dict:
         "ram_go": ram_go,
         "avx2": profil.get("avx2", True),
     }
+
+
+def tours_fenetre(n_ctx: int | None = None) -> int:
+    """Nombre d'ECHANGES (question + reponse) gardes bruts dans la fenetre.
+
+    Agrandir `n_ctx` ne change RIEN a ce que le cerveau se rappelle tant que la
+    fenetre glissante reste a 4 echanges : c'est elle qui decide de ce qui est
+    reenvoye. Regle : 1 echange par 1024 tokens de fenetre, entre 4 (l'ancien
+    comportement, fenetre 4096) et 12. AURA_FENETRE force une valeur (2 a 32).
+    """
+    brut = os.environ.get("AURA_FENETRE", "").strip()
+    if brut.isdigit():
+        return max(2, min(int(brut), 32))
+    try:
+        n = int(n_ctx) if n_ctx else int(reglages_optimaux()["n_ctx"])
+    except Exception:  # noqa: BLE001 — jamais bloquant au demarrage
+        return 4
+    return max(4, min(n // 1024, 12))
 
 
 def empreinte(profil: dict | None = None) -> str:

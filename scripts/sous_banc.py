@@ -105,7 +105,6 @@ def _couper_generation() -> dict[str, int]:
         return _SENTINELLE
 
     lc.generer = _generer                     # type: ignore[assignment]
-    lc.generer_riche = _generer               # type: ignore[assignment]
 
     # Le cache s'appuie sur les embeddings : on garde le vrai chemin
     # (`filtre_instantane`), c'est lui qu'on veut mesurer.

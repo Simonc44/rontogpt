@@ -17,8 +17,10 @@ import time
 import urllib.request
 from pathlib import Path
 
+from aura.llama_cerveau import chemin_gguf
+
 _RACINE = Path(__file__).resolve().parent.parent
-_GGUF = _RACINE / "modeles" / "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+_GGUF = Path(chemin_gguf())   # cerveau par defaut
 _BIN = _RACINE / "serveur" / "llama-server.exe"
 _LORA = sorted((_RACINE / "serveur").glob("aura-*-T.gguf"))
 

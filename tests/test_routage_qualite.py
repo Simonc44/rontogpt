@@ -238,7 +238,7 @@ class TestCanalisationDu1B:
         # la CAUSE est traitee : plus rien a reciter dans le prompt systeme
         assert "fournis ci-dessous" not in llama_cerveau._SYSTEME
         assert "FAITS WEB ou une FORMULE" not in llama_cerveau._SYSTEME
-        assert llama_cerveau._SYSTEME.startswith("Tu es RontoGPT")
+        assert llama_cerveau._SYSTEME == "You are a helpful assistant."
 
 
 class TestAntiCopieProche:
@@ -603,36 +603,49 @@ class TestRedactionSansContexteCopiable:
         monkeypatch.setattr(memoire_web, "chercher", lambda q, **k: "")
         monkeypatch.setattr(agents, "compresser", lambda t, q, **k: t)
         monkeypatch.setattr(agents, "en_triplets", lambda t, q: t)
-        monkeypatch.setattr(agents, "planifier", lambda q: "")
+        planifies = []
+        monkeypatch.setattr(agents, "planifier",
+                            lambda q, **k: planifies.append(q) or "")
         monkeypatch.setattr(agents, "exemple_style",
                             lambda *a, **k: "EXEMPLE DE STYLE A RECOPIER")
+        from aura import agents_adk
+        monkeypatch.setattr(agents_adk, "planifier_adk",
+                            lambda q: planifies.append(q) or None)
         vus = []
 
         def faux_generer(question, contexte_web="", formule="", **k):
             vus.append(k.get("systeme") or "")
-            return "Redaction de test"
+            # Assez long pour que les 3 blocs soient juges substantiels :
+            # un texte court declencherait le repli sur le prompt general.
+            return "Redaction de test sur le sujet. " * 20
 
         monkeypatch.setattr(orch.llama_cerveau, "generer", faux_generer)
         ia = orch.RontoGPT()
         ia.executer_detaille(self.RICHES[3])
-        assert vus, "une redaction doit passer par le cerveau"
-        systeme = vus[-1]
-        assert "EXEMPLE DE STYLE" not in systeme, systeme[:200]
-        assert "cherche dans l'historique" not in systeme, systeme[:200]
-        assert "lis le fichier" not in systeme, systeme[:200]
-        assert "LEXIQUE" not in systeme, systeme[:200]
-        assert systeme == orch._SYSTEME_REDACTION
+        # Trois blocs (intro / developpement / conclusion), pas un seul tour :
+        # c'est ce decoupage qui fait tenir la longueur sans deriver.
+        assert len(vus) == 3, len(vus)
+        # AUCUN plan : il serait retire du prompt par _rediger_developpe, et
+        # le calculer coutait deux generations ADK + un repli (mesure : 24 s
+        # de gagnees sur une dissertation).
+        assert planifies == [], planifies
+        # Le prompt est desormais DEDIE a la redaction (mesure du 24 oct. :
+        # 2 051 et 2 674 car au lieu de 501-624 avec le prompt general). Le
+        # contrat verifie reste le meme : rien de copiable, rien de l'outillage.
+        from aura.detection_demande import _SYSTEME_REDACTION
+        for systeme in vus:
+            assert systeme.startswith(_SYSTEME_REDACTION), systeme[:200]
+            assert "EXEMPLE DE STYLE" not in systeme, systeme[:200]
+            assert "cherche dans l'historique" not in systeme, systeme[:200]
+            assert "lis le fichier" not in systeme, systeme[:200]
+            assert "LEXIQUE" not in systeme, systeme[:200]
 
-    def test_question_ordinaire_garde_le_prompt_complet(self, monkeypatch):
-        """Non-regression : hors redaction, rien ne change.
-
-        Un fait ordinaire garde l'etat utilisateur et les annonces d'outil
-        (c'est ce qui rend « cherche dans l'historique » utilisable).
-        """
+    def test_question_ordinaire_prompt_fixe(self, monkeypatch):
+        """Le prompt systeme est le meme pour TOUTES les questions."""
         vus = []
         monkeypatch.setattr(
             orch.llama_cerveau, "generer",
             lambda *a, **k: vus.append(k.get("systeme")) or "ok")
         ia = orch.RontoGPT()
         ia._generer("Quelle est la capitale de l'Australie ?", "", "")
-        assert vus and "cherche dans l'historique" in (vus[-1] or "")
+        assert vus and (vus[-1] or "") == "You are a helpful assistant."

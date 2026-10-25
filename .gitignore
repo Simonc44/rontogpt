@@ -16,6 +16,8 @@ build/
 # (le package-lock.json, lui, reste versionnable : il fige les versions)
 node_modules/
 aura/.cache_routeur/
+# Index des documents locaux (aura/documents.py) : donnees privees, jamais git
+.cache_docs/
 
 # Modeles (trop gros pour git : telecharge via scripts/telecharger_llama.py)
 modeles/
@@ -65,6 +67,10 @@ aura/.graphe_faits.jsonl
 
 # Sauvegardes locales
 *.bak*
+
+# Corbeille de travail locale (copies mortes, sauvegardes de cache) : le
+# contenu est la pour etre jete, pas pour entrer dans l'historique.
+_to_delete/
 
 # Votes utilisateur locaux
 aura/feedback.jsonl

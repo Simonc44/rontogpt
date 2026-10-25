@@ -30,11 +30,14 @@ class TestIdentite:
         ia = _ia(monkeypatch)
         assert ia.executer("qui es tu ?") == self._poli(_IDENTITE)
 
-    def test_createur_reponse_constante(self, monkeypatch):
+    def test_createur_nomme_les_deux(self, monkeypatch):
         ia = _ia(monkeypatch)
         r = ia.executer("qui est ton createur ?")
-        assert "Simon" in r
-        assert r == self._poli(_IDENTITE)
+        # Le modele et le systeme ont deux createurs distincts : Gemma est
+        # cree par Google DeepMind, RontoGPT par Simon Chusseau.
+        assert "RontoGPT" in r and "Gemma" in r
+        assert "Google DeepMind" in r and "Simon Chusseau" in r
+        assert "pas un produit de Google" in r
 
     def test_nom_reponse_constante(self, monkeypatch):
         ia = _ia(monkeypatch)

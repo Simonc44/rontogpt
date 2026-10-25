@@ -10,19 +10,53 @@ from . import registre_experts
 from . import llama_cerveau, graphe_faits
 from . import logique as solveur_logique
 from . import potcode
+from . import skills
 from . import cache_reponses
 from . import encyclopedie
 from . import agents
 from . import adaptateurs
 from . import typographie as _typo
+from . import provenance as _provenance
 from .regles_reponse import _CAPACITE, _CAPACITES, _FONCTIONNEMENT, _IDENTITE, _MOTS_IDENTITE, _RE_CAPACITES, _RE_CAPACITE_MODELE, _RE_DEF, _RE_DEF_LOOKUP, _RE_FONCTIONNEMENT, _RE_IDENTITE, _RE_PHRASE_MIN, _est_meta_ia, _est_refus, _recopie, _repli_extractif, _reponse_bribe, _reponse_temps, _retirer_refus_tete, _sans_fragment_incomplet, _source_pertinente, _sujet_definition
-from .detection_demande import _DEMANDE_CODE, _RE_SORTIE_LONGUE, _est_demande_ecriture, _sans_accents
+from .detection_demande import (_DEMANDE_CODE, _RE_SORTIE_LONGUE,
+                                _est_demande_ecriture, _est_redaction,
+                                _sans_accents)
 
 if TYPE_CHECKING:                 # import de typage seul, jamais execute
     from .clarification import Suivi
     from .memoire_conversation import MemoireConversation
 
 LOG = logging.getLogger("aura.orchestrateur")
+
+
+def _mode_cloud() -> str:
+    """Que faire quand l'aiguilleur juge le modele local insuffisant ?
+
+    `demander` (DEFAUT) : rien ne quitte l'ordinateur ; la reponse locale est
+                          rendue avec `repli_propose`, et l'utilisateur
+                          decide d'envoyer la question a Gemini (un clic).
+    `oui`               : envoi automatique (ancien comportement).
+    `non`               : jamais.
+    """
+    v = os.environ.get("AURA_CLOUD", "demander").strip().lower()
+    return v if v in ("non", "demander", "oui") else "demander"
+
+
+#: Similarite minimale pour servir un extrait de document TEL QUEL (lookup).
+#: Mesure du 24 oct. 2026 sur un fichier de notes : question pertinente
+#: 0,60-0,78, question hors sujet 0,39. 0,55 separe les deux sans generer.
+_SEUIL_DOC_DIRECT = 0.55
+#: Seuil plus haut pour une question factuelle COURTE (« Quel est le budget ? »)
+#: elle n'est pas un lookup au sens de _RE_DEF_LOOKUP, mais elle attend une
+#: valeur, pas une synthese. Sous ce seuil, on laisse le modele rediger.
+_SEUIL_DOC_FACT = 0.65
+_RE_QUESTION_FACTUELLE = re.compile(
+    r"^\s*(quel|quelle|quels|quelles|combien|qui|quand|ou|où|comment)\b",
+    re.IGNORECASE)
+#: Verbes qui demandent une SYNTHESE, jamais un extrait brut.
+_RE_SYNTHESE = re.compile(
+    r"\b(resume|résume|synthese|synthèse|explique|analyse|compare|redige|"
+    r"rédige|liste|developpe|développe)\b", re.IGNORECASE)
 
 
 class PipelineMixin:
@@ -40,6 +74,7 @@ class PipelineMixin:
         _historique: "MemoireConversation"
         _clarif: "Suivi"
         _contexte_api: str
+        _dernier_contexte: dict | None
         derniere_erreur: str | None
         # methodes portees par les autres mixins
         _consommer_relance: Callable[..., tuple[str, bool]]
@@ -131,7 +166,37 @@ class PipelineMixin:
         except Exception as e:
             LOG.info("[repli] fenetre de conversation inchangee (%s)", e)
 
+    def envoyer_a_gemini(self, question: str) -> dict:
+        """Envoi EXPLICITE a Gemini : l'utilisateur vient de le demander.
+
+        C'est le seul chemin (avec AURA_CLOUD=oui) par lequel une question
+        quitte l'ordinateur. Rend un dict `ok` : en cas d'echec la raison est
+        dite, et la reponse locale deja affichee reste valable.
+        """
+        from . import gemini
+        if not gemini.disponible():
+            return {"ok": False, "erreur": gemini.derniere_erreur()
+                    or "Gemini n'est pas configure (cle absente ou desactivee)."}
+        texte = gemini.repondre(question, historique=self._tours_precedents())
+        if not texte:
+            return {"ok": False, "erreur": gemini.derniere_erreur()
+                    or "Gemini n'a pas repondu."}
+        self._consolider_repli(question, texte)
+        resultat = {
+            "question": question, "reponse": texte,
+            "cerveau_choisi": "gemini", "experts": [],
+            "repli": {"fournisseur": "gemini", "raison": "demande-utilisateur",
+                      "moment": "reponse", "reponse_locale": ""}}
+        resultat["provenance"] = _provenance.provenance(resultat)
+        return {"ok": True, **resultat}
+
     def executer_detaille(self, question: str, X=None, y=None) -> dict:
+        # La jauge ne doit jamais refleter le tour PRECEDENT (cache, reponse
+        # deterministe, erreur) : seul _generer() la renseigne.
+        self._dernier_contexte = None
+        # Documents cites par CE tour (nom + chemin) : l'API les rend au client
+        # pour des citations cliquables. Jamais ceux du tour precedent.
+        self._sources_docs: list[dict] = []
         cle = self._cle_reponse(question, X, y)
         en_cache = self._reponse_en_cache(cle)
         if en_cache is not None:
@@ -170,7 +235,7 @@ class PipelineMixin:
                 from . import aiguilleur, gemini
                 categorie = getattr(self, "_derniere_categorie", None)
                 decision = aiguilleur.decider(question, resultat, categorie)
-                if decision.escalader:
+                if decision.escalader and _mode_cloud() == "oui":
                     texte = gemini.repondre(
                         question,
                         contexte_web=str(resultat.get("contexte_web") or ""),
@@ -189,8 +254,19 @@ class PipelineMixin:
                         self._consolider_repli(question, texte)
                     else:
                         resultat["repli_echec"] = gemini.derniere_erreur()
+                elif decision.escalader and _mode_cloud() == "demander":
+                    # RIEN NE PART : on PROPOSE. La reponse locale reste la
+                    # reponse ; l'interface montre un bouton « Demander a
+                    # Gemini » qui avertit que la question quittera l'ordinateur.
+                    LOG.info("[aiguilleur] %s (%s) : envoi a gemini PROPOSE",
+                             decision.raison, decision.moment)
+                    resultat["repli_propose"] = {
+                        "fournisseur": "gemini",
+                        "raison": decision.raison,
+                        "moment": decision.moment}
             except Exception as e:
                 LOG.info("[aiguilleur] escalade impossible (%s)", e)
+            resultat["provenance"] = _provenance.provenance(resultat)
             self._memoriser_reponse(cle, resultat)
             return resultat
         finally:
@@ -200,6 +276,9 @@ class PipelineMixin:
     def _executer_detaille(self, question: str, X=None, y=None,
                            t0: float | None = None) -> dict:
         t0 = t0 if t0 is not None else time.time()
+        # Remis a False a chaque tour ; la redaction Gemini le repasse a True
+        # (cf. synthese_rontogpt._rediger_developpe).
+        self._redaction_gemini = False
         # ── RELANCE DE CLARIFICATION EN ATTENTE (un seul tour) ─────────
         # Si la porte a demande une precision au tour precedent, ce message
         # EST la precision : on la recolle a la question d'origine et le
@@ -234,6 +313,34 @@ class PipelineMixin:
                     "cerveau_choisi": "horloge",
                     "contexte_web": "", "formule": "",
                     "erreur_pgs": None, "reponse": temps}
+        # SKILLS (competences ciblees) : AVANT le routeur et le niveau 0, car
+        # une identite, une equation lineaire ou un prenom retenu se repondent
+        # exactement, sans 1B. Un skill qui ne sait pas (equation non
+        # lineaire) rend None : le pipeline continue normalement.
+        production_demandee = bool(
+            _RE_SORTIE_LONGUE.search(_sans_accents(question))
+            or _DEMANDE_CODE.search(_sans_accents(question))
+            or _est_demande_ecriture(question))
+        skill = skills.repondre(question, historique=self._historique,
+                                production=production_demandee)
+        if skill is not None:
+            nom_skill, reponse_skill = skill
+            # RECONSOLIDATION : une reponse exacte remplace la reponse
+            # approchante du cache. Sans cela, l'ancienne hallucination
+            # (« Je suis Gemma… ») reste servie a une question voisine,
+            # meme apres correction du pipeline.
+            if skills.doit_reconsolider(nom_skill):
+                try:
+                    filtre_instantane.mettre_a_jour(question, reponse_skill)
+                except Exception as e:          # noqa: BLE001
+                    LOG.info("[skills] cache non reconsolide (%s)", e)
+            return {"question": question,
+                    "experts": {f"skill:{nom_skill}"},
+                    "analyse": {"methodes": [f"skill:{nom_skill}"]},
+                    "cerveau_choisi": f"skill-{nom_skill}",
+                    "contexte_web": "", "formule": "",
+                    "erreur_pgs": None, "reponse": reponse_skill}
+
         # ── CYCLE UNIQUE (idea JEV #3) ─────────────────────────────────
         # maths directes + routage en UN passage : la majorite des questions
         # quotidiennes n'ont PAS besoin du LLM. NB : depuis le 6 oct. 2026
@@ -263,11 +370,9 @@ class PipelineMixin:
         # ne se negocie pas avec un 1B (question « qui es tu » -> reponse
         # stable et veridique, 0 ms, zero hallucination possible).
         basse = question.lower()
-        production_demandee = bool(
-            _RE_SORTIE_LONGUE.search(_sans_accents(question))
-            or _DEMANDE_CODE.search(_sans_accents(question))
-            or _est_demande_ecriture(question))
         if (not production_demandee
+                # « ton nom de domaine » parle d'un domaine, pas de moi.
+                and "nom de domaine" not in basse
                 and (any(_sans_accents(m) in _sans_accents(basse)
                          for m in _MOTS_IDENTITE)
                      or _RE_IDENTITE.search(_sans_accents(basse)))):
@@ -362,6 +467,13 @@ class PipelineMixin:
         # « Ecris une courte histoire de trois phrases » partait en regime
         # extractif (cf. _RE_ECRITURE) et rendait une non-reponse.
         ecriture = _est_demande_ecriture(question)
+        # REDACTION LONGUE : la question demande un TEXTE developpe (analyse,
+        # dissertation, comparaison), pas un fait. Elle part avec le prompt
+        # minimal _SYSTEME_REDACTION : mesure du 24 oct. 2026, il rend 2 051
+        # et 2 674 caractères la ou le prompt general rend 501-624 (et parfois
+        # une consigne recopiee). Une seule passe suffit ; le 1B n'a pas
+        # besoin qu'on lui decoupe la tache.
+        est_redaction = _est_redaction(question)
         est_def = bool(not ecriture and not hors_web and (
             _RE_DEF.search(question) or _RE_PHRASE_MIN.search(question)))
         # Filet final : uniquement les LOOKUPS (cf. _RE_DEF_LOOKUP).
@@ -419,11 +531,11 @@ class PipelineMixin:
         # ne repond pas. APRES les experts (une question exacte doit rester
         # exacte), AVANT la generation (demander coute moins cher qu'une
         # reponse fausse). Court-circuitee quand une precision vient d'etre
-        # recollee : un seul tour, jamais de ping-pong.
-        if not relance:
-            resultat_clarif = self._porte_clarification(question, X, y)
-            if resultat_clarif is not None:
-                return resultat_clarif
+        # recollee : si la precision reste insuffisante, la porte peut
+        # demander un detail supplementaire (trois relances maximum).
+        resultat_clarif = self._porte_clarification(question, X, y, relance)
+        if resultat_clarif is not None:
+            return resultat_clarif
 
         # FAN-OUT PARALLELE (idea JEV #1) : web ∥ PGS ∥ API publiques, un
         # aller-retour
@@ -500,7 +612,7 @@ class PipelineMixin:
                 if _source_pertinente(question, contexte_web):
                     LOG.info("[def] source pertinente -> synthese ancree")
                     rep = self._generer(question, contexte_web, "",
-                                        personnalite=None, categorie="web",
+                                        categorie="web",
                                         est_def=est_def,
                                         est_def_lookup=est_def_lookup)
                     rep = llama_cerveau._sans_doublons(rep) or rep
@@ -548,9 +660,13 @@ class PipelineMixin:
                 contexte_web += "\nSOURCES WEB :\n" + "\n".join(liens)
 
         # AGENT 1 (planificateur) : les taches actionables complexes sont
-        # decoupees en 2-3 etapes AVANT la redaction
+        # decoupees en 2-3 etapes AVANT la redaction.
+        # JAMAIS POUR UNE REDACTION : le plan y est explicitement retire
+        # (cf. _rediger_developpe, ou il a deja produit du code hors sujet).
+        # Le calculer coutait DEUX generations ADK (planificateur +
+        # relecteur) puis une troisieme en repli — pour un texte jete.
         plan = ""
-        if not formule:
+        if not formule and not est_redaction:
             try:
                 from . import agents_adk
                 plan = (agents_adk.planifier_adk(question)
@@ -579,14 +695,61 @@ class PipelineMixin:
         contexte_faits = "" if contexte_web else \
             graphe_faits.chercher(question)
         self._chaine_faits = self._extraire_chaine(contexte_faits)
-        # AGENT 5 (personnalite) : prompt systeme ajuste a la categorie
-        # routee ; None = prompt de base du cerveau (comportement d'avant).
-        # Le plan (agent 1) complete la question ; web compresse (agent 2)
-        # et personnalite sont passes au cerveau en meme temps.
+        # DOCUMENTS LOCAUX (RAG) : importer SES fichiers et repondre a partir
+        # d'eux, avec le nom de la source. Index vide = ~0 ms (lecture d'un
+        # fichier absent) ; MiniLM absent = recouvrement lexical. Ce contexte
+        # est verifie par construction (extraits de l'utilisateur) : il sert
+        # aussi d'ancrage au filet anti-hallucination, comme le graphe.
+        contexte_docs = ""
+        sources_docs: list[str] = []
+        trouve: dict = {"texte": "", "sources": [], "hits": []}
         try:
-            personnalite = agents.composer_personnalite(experts, question)
-        except Exception:
-            personnalite = None
+            from . import documents as _documents
+            trouve = _documents.interroger(question)
+            contexte_docs = trouve["texte"]
+            sources_docs = trouve["sources"]
+            vus_chemins: set[str] = set()
+            for hit in trouve.get("hits") or []:
+                chemin_doc = str(hit.get("source") or "")
+                if chemin_doc and chemin_doc not in vus_chemins:
+                    vus_chemins.add(chemin_doc)
+                    self._sources_docs.append(
+                        {"nom": str(hit.get("nom") or chemin_doc),
+                         "chemin": chemin_doc})
+        except Exception as e:      # noqa: BLE001 - jamais bloquant
+            LOG.info("[documents] recherche impossible (%s)", e)
+        if contexte_docs:
+            contexte_faits = (f"{contexte_faits}\n\n{contexte_docs}"
+                               if contexte_faits else contexte_docs)
+            # LOOKUP DOCUMENTAIRE DIRECT : quand un extrait repond avec une
+            # similarite forte, on le CITE au lieu de le faire reecrire par
+            # le 1B. Zero generation = zero invention, et ~0 s au lieu de
+            # ~15 s. Reserve aux questions de lookup : « resume mes notes »
+            # n'est pas un lookup et garde la synthese.
+            meilleur = (trouve.get("hits") or [None])[0]
+            factuelle = bool(
+                _RE_QUESTION_FACTUELLE.match(question)
+                and len(question.split()) <= 14
+                and not _RE_SYNTHESE.search(question))
+            seuil_doc = (_SEUIL_DOC_DIRECT if est_def_lookup else
+                         _SEUIL_DOC_FACT if factuelle else None)
+            if (seuil_doc is not None and meilleur
+                    and meilleur.get("score", 0) >= seuil_doc):
+                extrait = meilleur["texte"].strip()
+                if len(extrait) > 500:
+                    extrait = extrait[:500].rsplit(" ", 1)[0] + "…"
+                reponse_doc = (f"D'apres {meilleur['nom']} : « {extrait} »")
+                filtre_instantane.enregistrer(question, reponse_doc)
+                self._historique.ajouter("user", question)
+                self._historique.ajouter("assistant", reponse_doc)
+                return {"question": question, "experts": experts | {"doc"},
+                        "analyse": analyse, "cerveau_choisi": "documents",
+                        "contexte_web": contexte_web,
+                        "contexte_docs": contexte_docs, "formule": formule,
+                        "erreur_pgs": None, "reponse": reponse_doc}
+        # PROMPT SYSTEME FIXE : plus de masque de personnalite par categorie
+        # (aura/llama_cerveau.py). Le plan (agent 1) complete toujours la
+        # question ; le web compresse (agent 2) part en contexte.
         question_envoyee = f"{question}\n\nPLAN A SUIVRE :\n{plan}" if plan else question
         # HOT-SWAP ADAPTATEUR (LoRA) : si un adaptateur existe pour la
         # categorie routee, il est monte sur le contexte charge SANS
@@ -596,23 +759,19 @@ class PipelineMixin:
                      "math" if "math" in experts else
                      "code" if _DEMANDE_CODE.search(question) else "general")
         self._derniere_categorie = categorie
-        # MULTI-LORA SIMULTANE : les scores du routeur (probabilites) sont
-        # converts en poids d'adaptateurs — une question a deux sujets
-        # profite des deux specialites (ex : {"math": 0.7, "web": 0.3}).
-        # Defaut : la categorie dominante a 1.0 (comportement binaire).
+        # ROUTAGE MoE TOP-2 : le routeur classe la question, les DEUX
+        # meilleurs experts sont actives et renormalises (le grain per-token
+        # n'existe pas dans un LoRA : llama-server tient un vecteur
+        # d'echelles par generation). Repli : la categorie routee seule
+        # quand le routeur n'a rendu aucun score.
         try:
             from . import serveur_lora as _srv
             if _srv._actifs():
-                scores = analyse.get("scores") or {}
-                poids = {cat: s for cat, s in scores.items()
-                         if cat in _srv._IDS and s >= 0.15}
-                if not poids:
-                    poids = {categorie: 1.0}
-                elif categorie not in poids:
-                    poids[categorie] = max(max(poids.values()), 0.5)
-                _srv.activer_mixte(poids)
+                _srv.activer_top2(analyse.get("scores") or {},
+                                  defaut=categorie)
         except Exception as e:
-            LOG.info("[serveur_lora] mix route (%s) -> poids defaut", e)
+            LOG.info("[serveur_lora] routage top-2 impossible (%s) -> "
+                     "categorie par defaut", e)
         try:
             from .llama_cerveau import llm_charge as _llm_charge
             _llm = _llm_charge()
@@ -628,9 +787,9 @@ class PipelineMixin:
         _use_think = auto_think and _budget_ok
         reponse = self._generer(question_envoyee, contexte_web, formule,
                                  contexte_faits=contexte_faits,
-                                 personnalite=personnalite,
                                  categorie=categorie, est_def=est_def,
                                  est_def_lookup=est_def_lookup,
+                                 redaction=est_redaction,
                                  max_tokens=(110 if meta_ia and not
                                              _RE_SORTIE_LONGUE.search(
                                                  question_normalisee) else None),
@@ -648,9 +807,9 @@ class PipelineMixin:
                      "reflexion")
             reponse = self._generer(question_envoyee, contexte_web, formule,
                                      contexte_faits=contexte_faits,
-                                     personnalite=personnalite,
-                                     categorie=categorie, est_def=est_def,
+                                         categorie=categorie, est_def=est_def,
                                      est_def_lookup=est_def_lookup,
+                                     redaction=est_redaction,
                                      max_tokens=(110 if meta_ia and not
                                                  _RE_SORTIE_LONGUE.search(
                                                      question_normalisee) else None),
@@ -708,6 +867,9 @@ class PipelineMixin:
         verifiee = False
         if ((_BUDGET_S <= 0 or time.time() - t0 < _BUDGET_S)
                 and not hors_web
+                # Une redaction Gemini est un texte long : la verification
+                # web court la remplacerait par un extrait local.
+                and not getattr(self, "_redaction_gemini", False)
                 and self._a_besoin_verification(question, contexte_web,
                                                 reponse)):
             avant_verification = reponse
@@ -766,6 +928,11 @@ class PipelineMixin:
         except Exception as e:
             LOG.info("[nettoyage final] impossible (%s)", e)
         reponse = memoire_web.ajouter_citations(reponse, contexte_web)
+        # CITATION DES DOCUMENTS : un extrait local sans provenance n'est pas
+        # verifiable. La ligne est ajoutee ICI (chemin de generation) et pas
+        # par le modele, qui l'oublierait ou l'inventerait.
+        if sources_docs and "Sources :" not in reponse:
+            reponse = f"{reponse}\n\nSources : {', '.join(sources_docs)}"
         # memorise pour les futures questions (cache semantique + conversation)
         filtre_instantane.enregistrer(question, reponse)
         self._historique.ajouter("user", question)
@@ -776,12 +943,21 @@ class PipelineMixin:
         # reponse, et qui veut la reflexion doit demander `pensee`. Un
         # consommateur qui ignore ces cles (cache, ancrage, graphe) ne voit
         # donc jamais la reflexion du modele passer pour une reponse.
-        return {"question": question, "experts": experts, "analyse": analyse,
-                "cerveau_choisi": self._nom_cerveau(), "contexte_web": contexte_web,
+        return {"question": question, "experts": experts,                "analyse": analyse, "cerveau_choisi": self._etiquette_cerveau(), "contexte_web": contexte_web,
+                "contexte_docs": contexte_docs,
                 "formule": formule, "erreur_pgs": self.derniere_erreur,
                 "pensee": llama_cerveau.reflexion_du_tour(),
                 "auto_correction": llama_cerveau.alerte_du_tour(),
                 "reponse": reponse}
+
+    def _etiquette_cerveau(self) -> str:
+        """Nom public du cerveau pour ce tour.
+
+        Une redaction confiee a Gemini ne doit pas etre presentee comme une
+        reponse du modele local : le badge de provenance lit ce nom.
+        """
+        return ("gemini" if getattr(self, "_redaction_gemini", False)
+                else self._nom_cerveau())
 
     @staticmethod
     def _nom_cerveau() -> str:

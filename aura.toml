@@ -14,9 +14,18 @@
 nom = "qualite"
 
 [llama]
-gguf = "GEMMA"              # Gemma-3-1B Q4_K_M : rapide, < 1 Go, choix code par defaut
+gguf = "GEMMA"              # unsloth/gemma-3-1b-it-GGUF Q8_0 (gemma-3-1b-it-Q8_0.gguf)
 chemin = ""                # chemin libre (sinon modeles/ — chaîne vide = defaut)
 gpu = true                 # build GPU utilise si present (AURA_GPU=0 force le CPU)
+mlock = true               # poids verrouilles en RAM (AURA_MLOCK=0 coupe) :
+                           # use_mlock in-process, --load-mode mmap+mlock cote
+                           # serveur. Evite la pagination, ne raccourcit PAS le
+                           # chargement a froid — le demarrage instantane vient
+                           # du demon qui garde le serveur vivant.
+systeme = "defaut"         # "defaut" (meilleur score sur Gemma-3-1B) ou "fr"
+                           # (prompt Gemini 3 : 10/14 au banc sur le 1B, car il
+                           # recopie les balises ; a reserver a un cerveau plus
+                           # grand ou aux adaptateurs formes sur ce prompt).
 
 [serveur]
 actif = true              # llama-server Vulkan (prefill x3, spec n-gram x2) :
@@ -33,7 +42,17 @@ spec = true                # speculative decoding n-gram (x2 sur texte repetitif
 # budget_s = 45            # etapes facultatives coupees au-dela (AURA_BUDGET_S)
 verif_web = true           # preuve web avant livraison (AURA_VERIF_WEB)
 agents = true              # plan / double passe / compresseurs (AURA_AGENTS)
+redaction_gemini = false   # dissertations/redactions longues : Gemini d'emblee
+                           # au lieu des trois blocs locaux (AURA_GEMINI_REDACTION).
+                           # Envoie le sujet et les extraits a Google ; cle
+                           # GOOGLE_API_KEY requise. AURA_CLOUD=non reste
+                           # prioritaire, et un echec replie sur le local.
 seuil_confiance = 0.50     # seuil du routeur (AURA_SEUIL_CONFIANCE)
+
+[memoire]
+compaction = "importance" # a 90 % du contexte : "importance" oublie les echanges
+                          # vieux ou peu importants (defaut) ; "recent" garde
+                          # seulement les derniers tours (AURA_COMPACTION).
 
 [api]
 port = 8760                # serveur HTTP local /v1/* (AURA_API_PORT)

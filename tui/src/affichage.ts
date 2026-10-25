@@ -6,7 +6,8 @@
  * (`src/smoke_design.ts`), qui monte un écran de test et relit la frame peinte.
  *
  * Design d'une réponse :
- *   - le texte courant, tel quel ;
+ *   - le texte courant rendu en markdown : gras, italique, code inline, liens,
+ *     titres, listes, cases à cocher, citations et règles ;
  *   - un bloc de code `` ```langue `` : cadre arrondi, étiquette de langage sur
  *     le cadre, corps coloré par la grammaire quand elle est embarquée ;
  *   - une section « 🔗 Sources » : un titre et son lien par source, au lieu de
@@ -16,17 +17,24 @@
 import {
   BoxRenderable,
   CodeRenderable,
+  StyledText,
   SyntaxStyle,
   TextRenderable,
   bg,
   bold,
   fg,
+  italic,
   link,
+  strikethrough,
   t,
+  underline,
 } from "@opentui/core";
-import type { RenderContext } from "@opentui/core";
-import { chemin, couleurSite, decouper, domaine, filetype, initiale, texteSurPastille } from "./design";
-import type { Segment } from "./design";
+import type { RenderContext, TextChunk } from "@opentui/core";
+import {
+  analyserMarkdown, chemin, couleurSite, decouper, domaine, filetype, initiale,
+  texteSurPastille,
+} from "./design";
+import type { InlineSpan, Segment } from "./design";
 
 // -- palette (noir Codex) ---------------------------------------------------
 export const TH = {
@@ -88,6 +96,115 @@ export interface OptionsPeinture {
   couleur?: string;
   /** `false` : tout d'un bloc, sans cadre — le chemin bon marché du flux. */
   riche?: boolean;
+}
+
+// -- markdown ---------------------------------------------------------------
+/** Attributs appliqués à TOUS les morceaux d'une ligne (titre, citation…). */
+interface AttributsLigne {
+  gras?: boolean;
+  italique?: boolean;
+  souligne?: boolean;
+}
+
+/**
+ * Traduit les morceaux markdown en chunks styles d'OpenTUI. Chaque marqueur
+ * devient un attribut réel : `**gras**` → bold, `*italique*` → italic,
+ * `\`code\`` → fond de code, `[titre](url)` → lien cliquable souligné.
+ */
+function morceauxStyles(
+  spans: InlineSpan[],
+  couleur: string,
+  attributs: AttributsLigne = {},
+): TextChunk[] {
+  return spans.map((span) => {
+    let chunk = fg(span.code === true || span.lien !== undefined ? TH.accent : couleur)(span.texte);
+    if (span.code === true) chunk = bg(TH.codeFond)(chunk);
+    if (span.lien !== undefined) chunk = link(span.lien)(underline(chunk));
+    if (span.barre === true) chunk = strikethrough(chunk);
+    if (span.italique === true || attributs.italique === true) chunk = italic(chunk);
+    if (span.gras === true || attributs.gras === true) chunk = bold(chunk);
+    if (attributs.souligne === true) chunk = underline(chunk);
+    return chunk;
+  });
+}
+
+/** Une ligne de texte riche, repliée sur la largeur disponible. */
+function ligneStylee(
+  renderer: RenderContext,
+  spans: InlineSpan[],
+  couleur: string,
+  attributs: AttributsLigne = {},
+): TextRenderable {
+  return new TextRenderable(renderer, {
+    content: new StyledText(morceauxStyles(spans, couleur, attributs)),
+    fg: couleur,
+    wrapMode: "word",
+    width: "100%",
+  });
+}
+
+/**
+ * Un bloc de texte markdown : une ligne = un renderable. Les listes gardent
+ * leur puce en accent et leur retrait ; les titres sont colorés ; les citations
+ * portent une barre verticale. Le but est lisible ET compact — pas de cadre.
+ */
+function blocMarkdown(renderer: RenderContext, contenu: string, couleur: string): BoxRenderable {
+  const boite = new BoxRenderable(renderer, {
+    width: "100%",
+    flexDirection: "column",
+    backgroundColor: TH.fond,
+  });
+
+  for (const ligne of analyserMarkdown(contenu)) {
+    if (ligne.genre === "vide") {
+      boite.add(new TextRenderable(renderer, { content: " ", fg: couleur, width: "100%" }));
+      continue;
+    }
+    if (ligne.genre === "regle") {
+      boite.add(new TextRenderable(renderer, {
+        content: "─".repeat(48),
+        fg: TH.trait,
+        width: "100%",
+      }));
+      continue;
+    }
+    if (ligne.genre === "titre") {
+      boite.add(ligneStylee(renderer, ligne.spans,
+        ligne.niveau <= 2 ? TH.accent : TH.doux,
+        { gras: true, souligne: ligne.niveau === 1 }));
+      continue;
+    }
+    if (ligne.genre === "citation") {
+      const rang = new BoxRenderable(renderer, {
+        width: "100%", flexDirection: "row", backgroundColor: TH.fond,
+      });
+      rang.add(new TextRenderable(renderer, {
+        content: t`${fg(TH.accent)("▎")} `, width: 2,
+      }));
+      const txt = ligneStylee(renderer, ligne.spans, TH.doux, { italique: true });
+      txt.flexGrow = 1;
+      rang.add(txt);
+      boite.add(rang);
+      continue;
+    }
+    if (ligne.genre === "puce" || ligne.genre === "numero") {
+      const rang = new BoxRenderable(renderer, {
+        width: "100%", flexDirection: "row", backgroundColor: TH.fond,
+        paddingLeft: ligne.retrait * 2,
+      });
+      rang.add(new TextRenderable(renderer, {
+        content: t`${fg(TH.accent)(ligne.marque)} `,
+        width: ligne.marque.length + 1,
+      }));
+      const txt = ligneStylee(renderer, ligne.spans, couleur);
+      txt.flexGrow = 1;
+      rang.add(txt);
+      boite.add(rang);
+      continue;
+    }
+    boite.add(ligneStylee(renderer, ligne.spans, couleur));
+  }
+  return boite;
 }
 
 export interface Corps {
@@ -237,7 +354,7 @@ export function creerCorps(renderer: RenderContext, style: SyntaxStyle): Corps {
     for (const segment of decouper(contenu)) {
       if (segment.type === "code") bloc.add(cadreCode(renderer, style, segment));
       else if (segment.type === "sources") bloc.add(blocSources(renderer, segment));
-      else bloc.add(texte(renderer, segment.texte, couleur));
+      else bloc.add(blocMarkdown(renderer, segment.texte, couleur));
     }
   };
 

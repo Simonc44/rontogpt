@@ -95,14 +95,27 @@ class RontoGPT(PipelineMixin, VerificationMixin, RaisonnementMixin, ExpertsMixin
         # tours bruts alimentent la fenetre, et l'etat civil (nom,
         # possessions...) est extrait par regex en JSON compact. Fin de
         # l'historique brut injecte en masse dans le 1B.
-        self._historique = MemoireConversation()
+        # Fenetre proportionnelle a n_ctx (profil_materiel.tours_fenetre) :
+        # 4 echanges pour une fenetre de 4096, jusqu'a 12 pour 12288 et plus.
+        try:
+            from . import profil_materiel
+            _tours = profil_materiel.tours_fenetre()
+        except Exception:  # noqa: BLE001
+            _tours = 4
+        self._historique = MemoireConversation(fenetre=_tours)
         self._chaine_faits: list = []        # chaine graphe de la question
         self._derniere_categorie = "general"
+        # Preference d'interface, appliquee au VRAI prompt systeme par
+        # SyntheseMixin. "auto" laisse le modele suivre la question.
+        self._langue_reponse = "auto"
         # Vrai si un expert exact (logique, code, calcul, fast-lang) a deja
         # tranche : lu par _generer() pour le filet anti-hallucination.
         # Initialise ici : sans ca, appeler _generer() hors du pipeline
         # complet (tests, scripts) levait AttributeError.
         self._special_traite = False
+        # Jauge de contexte du dernier tour : mesure de saturation et
+        # compaction eventuelle (aura/contexte.py). None = sous le seuil.
+        self._dernier_contexte: dict | None = None
         # ETAT DE LA PORTE DE CLARIFICATION (aura/clarification.py) : la
         # relance en attente vit ICI, cote instance — un seul cerveau par
         # process (API, GUI), donc un seul suivi de conversation possible.

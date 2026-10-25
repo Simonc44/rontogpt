@@ -34,9 +34,11 @@ import time
 import urllib.request
 from pathlib import Path
 
+from aura.llama_cerveau import chemin_gguf
+
 _RACINE = Path(__file__).resolve().parent.parent
 _BIN = _RACINE / "serveur" / "vulkan" / "llama-server.exe"
-_GGUF = _RACINE / "modeles" / "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+_GGUF = Path(chemin_gguf())   # cerveau par defaut (le GGUF Llama a ete supprime)
 _LORAS = ",".join(str(_RACINE / "serveur" / f"aura-{n}-T.gguf")
                   for n in ("code", "general", "math", "web"))
 _PORT = 8763

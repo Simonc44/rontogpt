@@ -218,8 +218,11 @@ class RaisonnementMixin:
         LOG.info("[clarification] precision recollee : %s", fusion[:120])
         return fusion, True
 
-    def _porte_clarification(self, question: str, X, y) -> dict | None:
+    def _porte_clarification(self, question: str, X, y,
+                             relance: bool = False) -> dict | None:
         """Porte : question trop ouverte -> questions de relance, pas de reponse."""
+        if not relance:
+            self._clarif.annuler()
         if not clarification.actif():
             return None
         if X is not None and y is not None:
@@ -228,6 +231,10 @@ class RaisonnementMixin:
             question,
             a_contexte=clarification.a_un_sujet(self._historique.fenetre()))
         if besoin is None:
+            self._clarif.annuler()
+            return None
+        if relance and not self._clarif.peut_relancer():
+            self._clarif.annuler()
             return None
         self._clarif.poser(question, besoin)
         LOG.info("[clarification] %s (%s) : %s", besoin.famille,

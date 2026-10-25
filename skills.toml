@@ -1,0 +1,120 @@
+# Skills de RontoGPT
+#
+# Un skill est une competence CIBLEE, chargee seulement quand la question
+# correspond. Deux familles :
+#
+#   - deterministe : `handler` (ou `reponse`) rend la reponse sans LLM.
+#     C'est le seul moyen fiable de corriger un 1B sur un point precis.
+#   - consigne : `instructions` est ajoutee au prompt systeme (texte court :
+#     un 1B recopie les longues consignes).
+#
+# Champs :
+#   id          identifiant stable (tests, journal)
+#   titre       nom lisible dans le prompt
+#   priorite    plus grand = essaye en premier
+#   quand       phrases declencheuses (comparaison sans accents)
+#   motif       regex optionnelle sur la question normalisee
+#   contexte    "web" = actif des que des extraits web sont fournis
+#   handler     nom du handler Python (aura/skills.py)
+#   reponse     reponse fixe (aucun handler necessaire)
+#   instructions consigne injectee dans le prompt systeme
+#   reconsolider remplace une reponse approchante deja au cache semantique
+#                (sinon une ancienne hallucination reste servie a vie)
+
+[[skill]]
+id = "identite"
+titre = "Identite RontoGPT"
+priorite = 100
+quand = [
+  "qui es tu", "qui est tu", "tu es qui", "t'es qui", "qui t'a cree",
+  "ton createur", "ton nom", "tu t'appelles", "comment tu t'appelles",
+  "presente toi", "parle moi de toi", "ton identite", "ton architecture",
+  "tes solveurs", "ta memoire", "tes sources", "ta confidentialite",
+  "tes limites", "ton materiel", "ton modele",
+]
+motif = "(?i)\\b(qui\\s+(?:es|est|etes)[- ]?(?:tu|vous)|t'?es\\s+qui|presente[- ]?(?:toi|vous)|(?:peux|pourrais)[- ]?tu\\s+te\\s+presenter|comment\\s+tu\\s+t'?appelles?|ton\\s+(?:nom|createur|auteur|architecture|pipeline|fonctionnement|materiel|cpu|gpu|modele|historique|identite)|qui\\s+t'?a\\s+(?:cree|developpe|fait|entraine)|qui\\s+a\\s+cree\\s+(?:ce\\s+systeme|ce\\s+projet|rontogpt|gemma)|qui\\s+est\\s+derriere|(?:developpe|concu)\\s+par|createur\\s+(?:de|du)\\s+(?:gemma|ce\\s+systeme|rontogpt)|comment\\s+tu\\s+(?:fonctionnes|marches|calcules|resous|verifies|memorises|es\\s+organise)|tu\\s+es\\s+fait\\s+comment|tes\\s+(?:composants|solveurs|outils|experts|limites|sources|faiblesses|algorithmes|incertitudes|briques)|quelles\\s+briques|quel(?:s)?\\s+solveurs?\\s+utilises?[- ]tu|quel(?:le)?\\s+materiel|materiel\\s+utilises?[- ]tu|tu\\s+(?:calcules|tournes\\s+sur\\s+quoi|peux\\s+te\\s+tromper|es\\s+(?:fiable|hors\\s+ligne|infaillible|multilingue))|ta\\s+(?:memoire|confidentialite|machine|ram)|mes\\s+(?:donnees|fichiers)|tu\\s+parles\\s+(?:francais|anglais|quelles\\s+langues)|en\\s+quelle\\s+langue\\s+(?:tu|vous)\\s+(?:reponds|parles)|tu\\s+fais\\s+de\\s+la\\s+traduction|d'ou\\s+vient\\s+ta\\s+reponse|est[- ]ce\\s+envoye|rgpd|combien\\s+de\\s+(?:ram|memoire)\\s+(?:as|utilises)[- ]tu|tu\\s+utilises?\\s+le\\s+cloud|tu\\s+utilises?\\s+(?:wikipedia|internet|le\\s+web)|c'est\\s+quoi\\s+rontogpt|qu'est[- ]ce\\s+que\\s+rontogpt)\\b"
+reponse = "Je suis RontoGPT, un assistant francophone qui tourne en local sur ta machine. Mon cerveau est Gemma 3 1B, un modèle de langage créé par Google DeepMind. Le système RontoGPT qui m'entoure est créé par Simon Chusseau. Gemma apporte le langage ; RontoGPT apporte les solveurs, les experts, la mémoire et la recherche. Je ne suis pas Gemini : Gemma est mon modèle de base, pas mon identité complète. Je fonctionne sans envoyer la conversation au cloud, sauf si un service distant est explicitement configuré."
+handler = "identite"
+reconsolider = true
+
+[[skill]]
+id = "algebre"
+titre = "Algebre lineaire"
+priorite = 95
+motif = "(?i)(\\bresous?\\b|\\bresoudre\\b|\\bequations?\\b|=)"
+handler = "algebre"
+reconsolider = true
+
+[[skill]]
+id = "pgcd"
+titre = "PGCD et PPCM"
+priorite = 94
+quand = [
+  "pgcd", "ppcm", "plus grand commun diviseur",
+  "plus petit commun multiple", "plus petit multiple commun",
+]
+handler = "pgcd"
+reconsolider = true
+
+[[skill]]
+id = "memoire"
+titre = "Memoire de l'utilisateur"
+priorite = 90
+quand = [
+  "mon prenom", "comment je m'appelle", "quel est mon nom",
+  "sur quoi je travaille", "mon projet", "sur quel projet",
+]
+handler = "memoire"
+
+[[skill]]
+id = "resume"
+titre = "Resume de conversation"
+priorite = 85
+quand = [
+  "resume notre conversation", "resume la conversation",
+  "de quoi parlions nous", "de quoi on parlait", "resume nos echanges",
+]
+motif = "(?i)(?:resume|resumer).*(?:conversation|echanges|discussion)|de quoi (?:a t on|on a|avons nous) parle"
+handler = "resume"
+
+[[skill]]
+id = "code"
+titre = "Code executable"
+priorite = 50
+quand = [
+  "corrige ce code", "corrige le code", "code python",
+  "ecris une fonction", "ecris un script", "ecris du code", "palindrome",
+  "for i in", "def ", "traceback", "erreur de syntaxe",
+]
+instructions = "CODE — Le code doit être exécutable tel quel. Pour une correction, change le minimum et vérifie la syntaxe (deux-points, indentation, parenthèses). N'invente jamais d'appel à une fonction qui n'existe pas. Pour un palindrome, ignore casse, espaces et ponctuation avant de comparer."
+
+[[skill]]
+id = "sources"
+titre = "Ancrage sur les sources"
+priorite = 45
+contexte = "web"
+instructions = "SOURCES — Des extraits sont fournis. Réponds à partir d'eux, cite-les, et n'ajoute aucun chiffre, date ou version absent des extraits. Si l'extrait ne contient pas la réponse (une page météo sans valeur, par exemple), dis-le au lieu de le présenter comme la réponse."
+
+[[skill]]
+id = "honnetete"
+titre = "Honnêteté factuelle"
+priorite = 44
+quand = [
+  "capitale de la lune", "pese un nuage", "poids d'un nuage",
+  "poids d un nuage", "question piege", "question absurde",
+  "n'a pas de sens", "n a pas de sens",
+]
+motif = "(?i)\\bcapitale\\s+(?:de\\s+la\\s+|du\\s+|de\\s+)?(?:lune|soleil|mars|jupiter|saturne|venus|mercure|neptune|uranus|pluton)\\b"
+handler = "honnetete"
+reconsolider = true
+instructions = "HONNÊTETÉ — Si la question est absurde ou sans réponse factuelle, dis-le en une phrase et n'invente ni source ni capitale. Pour un ordre de grandeur, donne une estimation avec ses hypothèses, pas un chiffre présenté comme exact."
+
+[[skill]]
+id = "logique"
+titre = "Rigueur logique"
+priorite = 40
+quand = [
+  "tous les oiseaux", "tous les chats", "est ce forcement",
+  "sophisme", "raisonnement circulaire",
+]
+instructions = "LOGIQUE — Distingue « tous les A sont B » de « tous les B sont A ». Un contre-exemple suffit. Ne confonds pas affirmation de la conséquence et raisonnement circulaire, et ne prétends pas qu'un papillon a des plumes."

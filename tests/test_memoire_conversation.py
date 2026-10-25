@@ -72,6 +72,15 @@ class TestFenetreGlissante:
         assert memoire.fenetre() == []
         assert memoire.rechercher("PIN-1234") != ""   # RLM preserve
 
+    def test_compacter_garde_letat_durable(self, memoire):
+        """Compacter jette la matiere brute mais garde le nom et les faits."""
+        memoire.ajouter("user", "Je m'appelle Pierre")
+        memoire.ajouter("assistant", "Enchante, Pierre.")
+        assert memoire.compacter() == 2
+        assert memoire.fenetre() == []                    # fenetre videe
+        assert memoire.etat()["utilisateur"] == "Pierre"  # etat conserve
+        assert memoire.rechercher("Pierre") != ""          # RLM intact
+
 
 class TestEtatEvenementiel:
     def test_nom_extrait(self, memoire):

@@ -2,12 +2,14 @@
 
 Usage :
   python -m aura                 # interface terminal OpenTUI (defaut)
+                                 # TUI absent -> conversation en console
   python -m aura "question"      # une question, reponse sur la sortie standard
   python -m aura --console       # ancienne console texte
   python -m aura --demo
   python -m aura "question" --x "[[1],[2],[3]]" --y "[1,8,27]"
   python -m aura --superviser      # API surveillee (relancee si elle plante) + TUI
   python -m aura --superviser --api  # API seule, surveillee
+  python -m aura --superviser --api --demon  # idem, detache en arriere-plan
 
 POINT D'ENTREE UNIQUE : le superviseur vivait dans un `main.py` a la racine ;
 il est desormais ici (cf. aura/superviseur.py), donc un seul lanceur a
@@ -94,6 +96,9 @@ def main(argv=None) -> int:
     p.add_argument("--api", action="store_true",
                    help="avec --superviser : API seule, sans interface "
                         "(l'ancien « python main.py --api »)")
+    p.add_argument("--demon", action="store_true",
+                   help="avec --superviser : detache le processus et rend la "
+                        "main (API seule, journal logs/aura-demon.log)")
     args = p.parse_args(argv)
 
     if args.selfplay:
@@ -108,6 +113,9 @@ def main(argv=None) -> int:
     # de l'interface ensemble, donc il passe AVANT le choix d'interface.
     if args.superviser:
         from . import superviseur
+        if args.demon:
+            # Un TUI detache n'aurait aucun terminal : --demon vaut --api.
+            return superviseur.lancer_demon()
         return superviseur.lancer(interface=not args.api)
 
     # INTERFACE PAR DEFAUT : le TUI. Tout ce qui demande un chemin TEXTE
@@ -128,8 +136,14 @@ def main(argv=None) -> int:
     # sens de l'option. Avec une question, elle reste une question ponctuelle.
     if args.chat or (args.console and not (args.question or args.x or args.y)):
         return _chat(ia)
-    if args.demo or (not args.question and not (args.x and args.y)):
+    if args.demo:
         return _demo(ia)
+    if not args.question and not (args.x and args.y):
+        # Aucune question et pas d'interface installee : on ouvre la
+        # CONVERSATION. La demo X3 est un test de plomberie, pas un accueil —
+        # un utilisateur qui tape `rontogpt` sans argument veut parler au
+        # modele, pas voir une formule mathematique.
+        return _chat(ia)
 
     X = json.loads(args.x) if args.x else None
     y = json.loads(args.y) if args.y else None

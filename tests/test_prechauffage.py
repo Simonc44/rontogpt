@@ -42,7 +42,7 @@ class TestPrechauffer:
         lc._prechauffer(faux, 0.0)
         assert len(faux.appels) == 1
         assert faux.appels[0]["max_tokens"] == 1     # minuscule, jetee
-        assert faux.appels[0]["temperature"] == 0.0
+        assert faux.appels[0]["temperature"] == 1.0
 
     def test_interrupteur_AURA_PRECHUFFAGE(self, monkeypatch):
         monkeypatch.setenv("AURA_PRECHUFFAGE", "0")

@@ -72,5 +72,6 @@ def bench(chemin: str) -> None:
 
 
 if __name__ == "__main__":
-    bench("modeles/Llama-3.2-1B-Instruct-Q4_K_M.gguf")
+    from aura.llama_cerveau import chemin_gguf
+    bench(chemin_gguf())
     bench("modeles/IQ3_M.download.gguf")

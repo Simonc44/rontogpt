@@ -1,4 +1,4 @@
-"""Benchmark head-to-head : Llama 3.2 1B (RontoGPT) vs Qwen 2.5 1.5B (Ollama).
+"""Benchmark head-to-head : Gemma 3 1B (RontoGPT) vs Qwen 2.5 1.5B (Ollama).
 
 Memes questions, memes regles (temp 0.1, 150 tokens max), reponses verifiables.
 Usage : python scripts/compare_qwen.py   (necessite qwen2.5:1.5b dans Ollama)
@@ -7,6 +7,8 @@ import time
 
 import requests
 from llama_cpp import Llama
+
+from aura.llama_cerveau import chemin_gguf
 
 QUESTIONS = [
     # (question, sous-chaine attendue dans la reponse)
@@ -21,7 +23,7 @@ QUESTIONS = [
 PROMPT_VITESSE = "Explique la photosynthese en deux phrases."
 OPTS_LLAMA = dict(n_ctx=1024, n_threads=6, n_batch=512, flash_attn=True,
                   verbose=False, type_k=8, type_v=8)
-GGUF = "modeles/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+GGUF = chemin_gguf()   # cerveau par defaut du projet
 
 
 def demander_ollama(question: str, modele: str, max_tokens: int = 150):

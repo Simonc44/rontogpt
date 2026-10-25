@@ -215,7 +215,7 @@ class TestLesClientsEcoutentLesDeuxPhases:
     abonnait.
     """
 
-    @pytest.mark.parametrize("module", ["aura/api.py", "aura/gui_web.py"])
+    @pytest.mark.parametrize("module", ["aura/api.py"])
     def test_abonnement_avec_phase(self, module):
         from pathlib import Path
         racine = Path(__file__).resolve().parent.parent

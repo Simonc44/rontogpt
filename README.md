@@ -227,7 +227,7 @@ class node_llm,node_adapters,node_loraserver,node_kernel,node_web,node_llama,nod
 | **PoT-code** (`potcode.py`) | broken code generation | the 1B writes a function + asserts, a sandbox (restricted builtins + instruction budget via `settrace`) executes everything; a failing assert = the code is never delivered |
 | **Cognitive agents** (`agents.py`) | small-model brittleness | 7 lightweight agents orchestrate the 1B: task planner (complex asks split into 2-3 steps before writing), RAG compressor (only the 3 useful web sentences reach the LLM), style cleaner (removes 1B language tics), recursive debugger (failed code is retried with the exact sandbox error, max 3), persona router (system prompt adapted per category), style mimicry (few-shot exemplars calibrate the answer to big-model prose), double-pass editor (the 1B critiques its own draft then rewrites — catching flaws in existing text is statistically easier than writing perfectly first-try) |
 | **LoRA hot-swap** (`adaptateurs.py`) | one brain, one specialty | dynamic adapter swapping via the llama.cpp C-API: the base GGUF loads once, category adapters (~10-40 MB, trained on Colab with PEFT) mount/unmount without reloading. LRU in memory (default 1 adapter = near-zero footprint). `AURA_ADAPTATEURS=1` to enable |
-| **Served multi-LoRA** (`serveur_lora.py`) | one brain, several simultaneous specialties | the official llama-server (CPU build, auto-started by RontoGPT) mounts the Q4_K_M brain + all 4 category adapters at boot; the router's probabilities become simultaneous weights `{"math": 0.7, "web": 0.3}` in one HTTP call — no reload, ~ms hot-swap. In-process fallback never blocks |
+| **Served multi-LoRA** (`serveur_lora.py`) | one brain, several simultaneous specialties | the official llama-server (CPU build, auto-started by RontoGPT) mounts the Q4_K_M brain + all 4 category adapters at boot; the router's **top two** probabilities become normalised simultaneous weights `{"math": 0.62, "web": 0.38}` in one HTTP call — no reload, ~ms hot-swap. (LoRA scales apply per request; per-token gating would need a real MoE model.) In-process fallback never blocks |
 | **Dynamic Compute** | one speed for everything | a question that needs reasoning gets a ×2 token budget (floor 400) for its `<think>` block; simple ones stay instant. That reasoning is **not** stripped from the stream — it is shown, in its own phase (`PHASE_PENSEE`) |
 | **Long-term memory** (`graphe_faits.py`) | equal-weight knowledge | every triplet carries a strength; each **verified** use reinforces it, lookup is strength × recency weighted — knowledge organizes its own importance, zero retraining |
 | **Self-play** (`selfplay.py`) | improvement needs a user | a challenge generator builds logic puzzles & drills from the fact graph, a deterministic judge validates, successes reinforce the graph and join the training dataset — AlphaGo-style closed loop. `aura --selfplay 20` |
@@ -239,6 +239,12 @@ environment before starting RontoGPT. RontoGPT then sends the question to Gemini
 depending on the plan and usage, the API may be paid. Without this variable,
 RontoGPT uses its existing DDGS path. Set `AURA_GEMINI_MODEL` to override the model
 (default: `gemini-3.8-flash`).
+
+For dissertations and long-form writing, `AURA_GEMINI_REDACTION=1` (or
+`redaction_gemini = true` under `[qualite]`) sends the task directly to Gemini
+in one request with an essay prompt, instead of the three local blocks. Writing
+stays local by default; `AURA_CLOUD=non` forbids any upload, and an API failure
+falls back to the local blocks.
 
 ### Thinking, in the open
 
@@ -273,6 +279,29 @@ the sectioned pipeline): it was a second generator arguing with the model's own
 reasoning, and it was what made long answers slow. What is left is the reasoner
 plus a bounded correction pass. Cost: the thinking now streams too, so a long
 reflection is visible time rather than hidden time.
+
+## 📁 Your documents, without the cloud
+
+RontoGPT can answer from **your** files (PDF, Markdown, text), indexed
+locally, with no network call. In the desktop window, the left panel is all
+you need: **“+ Add files”**, the list of indexed documents, and **“New
+conversation”** to start over.
+
+From the command line:
+
+```bash
+python -m aura.documents add report.pdf notes.md
+python -m aura.documents add-dossier ~/Documents/my-notes
+python -m aura.documents list
+python -m aura.documents search "what does the report say about the budget?"
+python -m aura.documents rm report.pdf
+```
+
+The index lives in `.cache_docs/` (never committed). Answers grounded in a
+document carry a `Sources: file-name.md` line. For a short factual question
+with a very close passage, the passage is **quoted as-is** (no generation, no
+invention); otherwise the 1B synthesises from the excerpts. Without MiniLM,
+search falls back to lexical overlap — never to an error.
 
 ## 🎓 Teaching your AI
 

@@ -28,8 +28,9 @@ dependencies = [
     # (index abetlen), donc aucun compilateur n'est requis.
     "llama-cpp-python==0.3.36",
     "huggingface-hub>=0.25",
+    "pypdf>=5.0",  # RAG documents locaux (aura/documents.py) : lecture PDF
+
     "cryptography>=50.0.1",
-    "pywebview>=6.0",  # GUI web (aura/gui_web.py) : fenetre frameless + pont JS <-> Python
     "onnxruntime>=1.24.3",
     "tokenizers>=0.23.2",
     "google-adk>=2.12.0",  # agents ADK opt-in (AURA_ADK=1) : aura/agents_adk.py
@@ -96,7 +97,7 @@ packages = ["aura", "rontogpt"]
 # fichiers langue) et sans tui/ (interface terminal).
 # `only-include` et non `include` : avec `packages`, hatchling ignore
 # `include` (verifie — la wheel ne contenait que aura/ et rontogpt/).
-only-include = ["aura", "rontogpt", "concepts.toml", "adaptateurs", "tui"]
+only-include = ["aura", "rontogpt", "concepts.toml", "skills.toml", "identite.toml", "adaptateurs", "tui"]
 # Les deux seuls contenus volumineux et regenerables : le cache Bun de la TUI
 # et les adaptateurs Llama 3.2 archives (le code lit les .gguf/.cvec de la
 # racine de `adaptateurs/`).

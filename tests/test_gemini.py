@@ -115,6 +115,19 @@ def test_modele_et_budget_configurables(avec_cle, monkeypatch):
     assert vus["timeout"] == 5
 
 
+def test_prompt_et_faits_personnalises(avec_cle, monkeypatch):
+    """Une redaction fournit son prompt et ses faits verifies a Gemini."""
+    vus = {}
+    monkeypatch.setattr(gemini.urllib.request, "urlopen", _faux_urlopen(vus))
+    gemini.repondre(Q, contexte_web="extrait", contexte_faits="Fait verifie.",
+                    systeme="PROMPT REDACTION", max_tokens=777)
+    corps = vus["corps"]
+    assert corps["systemInstruction"]["parts"][0]["text"] == "PROMPT REDACTION"
+    assert corps["generationConfig"]["maxOutputTokens"] == 777
+    contenu = corps["contents"][-1]["parts"][0]["text"]
+    assert "FAITS VERIFIES" in contenu and "Fait verifie." in contenu
+
+
 def test_valeur_numerique_invalide_retombe_sur_le_defaut(avec_cle, monkeypatch):
     vus = {}
     monkeypatch.setenv("AURA_GEMINI_TIMEOUT", "beaucoup")

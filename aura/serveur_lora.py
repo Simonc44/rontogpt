@@ -23,6 +23,7 @@ Cycle de vie (AURA_SERVEUR=1 pour activer) :
 """
 import json
 import logging
+import math
 import os
 import subprocess
 import threading
@@ -369,6 +370,37 @@ def _n_ctx() -> int:
         return 4096
 
 
+def _mlock() -> bool:
+    """Les poids restent-ils VERROUILLES en RAM ? (AURA_MLOCK=0 coupe)
+
+    mlock empeche Windows de paginer/compresser les 1,1 Go de poids : le
+    serveur ne repaie pas de lecture disque apres une veille ou une pression
+    memoire, et le premier token d'une instance deja vivante reste immediat.
+    En revanche, mlock NE RACCOURCIT PAS le chargement initial — un boot a
+    froid lit toujours le GGUF. Le « boot instantane » vient de garder le
+    serveur vivant (mode demon), pas du verrou lui-meme.
+    """
+    return os.environ.get("AURA_MLOCK", "1") != "0"
+
+
+def _args_mlock(aide: str) -> list[str]:
+    """Options de verrouillage RAM acceptees par CE binaire.
+
+    b11111 remplace `--mlock` par `-lm/--load-mode` (`mlock`, `mmap+mlock`).
+    On ne pose que ce que le binaire declare dans --help : une option
+    inconnue ferait echouer le boot et on perdrait le chemin serveur.
+    `mmap+mlock` garde le mapping (demarrage rapide, pages partagees) tout
+    en verrouillant les pages touchees.
+    """
+    if not _mlock():
+        return []
+    if "--load-mode" in aide:
+        return ["--load-mode", "mmap+mlock"]
+    if "--mlock" in aide:
+        return ["--mlock"]
+    return []
+
+
 def _demarrer() -> bool:
     """Demarre le serveur avec le cerveau + les adaptateurs au boot."""
     global _process, _indispo
@@ -433,6 +465,11 @@ def _demarrer() -> bool:
         cmd += ["-fa", "on"]
     if _reg.get("type_kv") == 8 and "--cache-type-k" in _aide:
         cmd += ["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"]
+    _opts_mlock = _args_mlock(_aide)
+    if _opts_mlock:
+        cmd += _opts_mlock
+        LOG.info("[serveur_lora] poids verrouilles en RAM (%s)",
+                 " ".join(_opts_mlock))
     adaptateurs = _adaptateurs_boot()
     # GARDE-FOU D'ARCHITECTURE (aura/adaptateurs.py) : un adaptateur LoRA
     # est un DELTA DE POIDS pour une architecture precise. Monte sur une
@@ -542,6 +579,78 @@ def rechauffer() -> None:
 # pointeurs de tenseurs en memoire C de llama.cpp sous ses pieds —
 # resultat : sortie corrompue (melange de specialites) ou crash.
 _verrou = threading.Lock()
+
+
+# ── ROUTAGE MoE : TOP-2 EXPERTS ─────────────────────────────────────────
+#
+# CE QUE LE RUNTIME PERMET, ET CE QU'IL NE PERMET PAS
+# ---------------------------------------------------
+# Un adaptateur LoRA est un DELTA DE POIDS LINEAIRE : llama-server applique
+# UN vecteur d'echelles pour toute la generation (`POST /lora-adapters`).
+# Il n'y a pas de porte par token dans ce format — un routage Top-2 PAR
+# TOKEN suppose des poids de routeur DANS le modele (architecture MoE),
+# pas un overlay LoRA. Le grain reellement disponible est donc la REQUETE.
+#
+# Ancien comportement : tout expert dont la probabilite depassait 0,15
+# etait active avec son score brut. Trois consequences :
+#   - jusqu'a 4 deltas superposes a faible echelle : la specialite
+#     dominante etait diluee ;
+#   - la somme des echelles tombait sous 1 des qu'un expert etait ecarte,
+#     donc la reponse perdait de la specialisation sans que rien ne le dise ;
+#   - « deux vrais sujets » (math + web) n'etait pas distingue de « bruit »
+#     (trois scores a 0,2).
+# Ici : les DEUX meilleurs seulement, renormalises pour que le budget de
+# specialisation reste constant.
+TOP_K = 2
+SEUIL_EXPERT = 0.15
+
+
+def routeur_top2(scores: dict[str, float] | None,
+                 seuil: float = SEUIL_EXPERT) -> dict[str, float]:
+    """Top-2 des experts, poids renormalises (somme = 1).
+
+    - seules les categories SERVIES par le serveur (`_IDS`) sont retenues :
+      un score « pot » ou « rag » n'a pas d'adaptateur monte ;
+    - un score sous `seuil`, non numerique ou non fini est ecarte — un
+      expert a 2 % n'est pas un expert, c'est du bruit ;
+    - egalite : l'ordre de boot de `_IDS` tranche (deterministe, donc le
+      meme mix pour la meme question d'un run a l'autre) ;
+    - dict vide / aucun candidat -> {} : le repli appartient a l'appelant
+      (en general la categorie routee, cf. `activer_top2`).
+    """
+    if not scores:
+        return {}
+    candidats: list[tuple[int, str, float]] = []
+    for cat, i in _IDS.items():
+        try:
+            score = float(scores.get(cat, 0.0))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(score) and score >= seuil:
+            candidats.append((i, cat, score))
+    if not candidats:
+        return {}
+    candidats.sort(key=lambda t: (-t[2], t[0]))
+    retenus = candidats[:TOP_K]
+    total = sum(score for _, _, score in retenus)
+    return {cat: round(score / total, 3) for _, cat, score in retenus}
+
+
+def activer_top2(scores: dict[str, float] | None,
+                 defaut: str | None = None) -> bool:
+    """Applique le mix Top-2 du routeur ; repli `defaut` si aucun score.
+
+    `defaut` est la categorie deduite par l'orchestrateur (experts ou
+    regex code) : elle sert UNIQUEMENT quand le routeur n'a rien donne
+    (methode « mots-cles », score vide), jamais a forcer un troisieme
+    expert dans un Top-2 deja rempli.
+    """
+    poids = routeur_top2(scores)
+    if not poids:
+        if not defaut:
+            return False
+        poids = {defaut: 1.0}
+    return activer_mixte(poids)
 
 def activer(categorie: str) -> bool:
     """Monte l'adaptateur de la categorie seul (API simple = mix 100/0)."""
@@ -764,6 +873,7 @@ def statut() -> dict:
     return {"actives": _actifs(), "adresse": _ADRESSE,
             "serveur_vivant": _existe_serveur(),
             "adaptateur": dict(_actif) if _actif else None,
+            "routage_top_k": TOP_K, "mlock": _mlock(),
             "indisponible": _indispo,
             "timings": derniers_timings()}
 

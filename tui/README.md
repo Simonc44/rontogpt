@@ -22,8 +22,11 @@ L'écran reprend la mise en page de l'interface Codex, avec l'emblème RontoGPT 
 - en-tête `>_ RontoGPT (vX.Y.Z)` et dossier courant dessous ;
 - l'emblème (`src/logo.ts`, points braille tirés du logo officiel) très discret,
   centré, tant que le fil est vide ; il se masque sur un terminal trop petit ;
-- ta question dans une bande grise précédée de `›`, la réponse précédée de `•`,
-  puis une ligne de méta discrète (`titulaires · 3.0 s · experts : web`) ;
+- ta question dans une bande grise précédée de `›`, la réponse précédée de `•` ;
+  aucune ligne de méta sous la réponse ;
+- le markdown de la réponse est rendu : `**gras**`, `*italique*`, `` `code` ``,
+  liens, titres, listes à puces / numérotées, cases à cocher, citations et
+  règles (les identifiants comme `rag_binaire` ou `__init__` restent intacts) ;
 - attente : puce clignotante et `Réflexion (12 s • Échap pour interrompre)` ;
 - barre de saisie grise de 3 lignes et deux lignes de pied de page ;
 - une reponse qui contient du code ou des sources : chaque bloc ```langue prend un
@@ -50,16 +53,21 @@ vaut 2x4 points, et les cases vides sont de vrais espaces (pas U+2800).
 
 ## Commandes
 
-| Commande | Effet |
+| Command | Effect |
 |---|---|
-| *(texte)* | envoyer la question |
-| `/aide` ou `aide` | l'ecran d'aide |
-| `/effacer` ou `clear` | vide le **fil affiche** (la memoire du cerveau est intacte) |
-| `/oubli` ou `reset` | le cerveau oublie la conversation (`POST /v1/reset`) |
-| `/etat` | version, profil, cerveau, llama.cpp, GPU, budget |
-| `/pensee` | afficher ou masquer le flux de réflexion |
-| `/quitter`, `exit`, `Ctrl+C` | sortir |
-| `Echap` | interrompt la reponse en cours (AbortController) |
+| *(text)* | send the question |
+| `/help` or `/aide` | this screen |
+| `/clear` or `/effacer` | clear the **displayed** thread (the brain memory is intact) |
+| `/forget` or `/oubli` | the brain forgets the conversation (`POST /v1/reset`) |
+| `/memory` | what the brain keeps in mind, with context fill and compaction mode (`GET /v1/memoire`) |
+| `/init` | load the brain now (`POST /v1/init`) |
+| `/mcp` | Coucou MCP bridge and project MCP servers |
+| `/plan` | toggle plan mode (plan first, no execution) |
+| `/compact` | drop the raw window, keep durable facts (`POST /v1/compact`) |
+| `/cloud` | Gemini: show/set the key, on/off, fallback mode, long-form writing (`GET/POST /v1/cloud`) |
+| `/status` or `/etat` | version, profile, brain, llama.cpp, GPU, budget |
+| `/quit`, `exit`, `Ctrl+C` | exit (Ctrl+C asks for confirmation) |
+| `Esc` | interrupt the current answer (AbortController) |
 
 ## Installation de A à Z avec uv
 

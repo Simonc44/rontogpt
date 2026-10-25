@@ -1,5 +1,5 @@
 @echo off
-rem RontoGPT - interface graphique (pywebview).
+rem RontoGPT - interface terminal (TUI).
 rem %~dp0 = dossier de ce fichier : marche quelle que soit l'installation.
 cd /d "%~dp0"
 
@@ -13,5 +13,5 @@ if not exist ".venv\Scripts\python.exe" (
     )
 )
 
-".venv\Scripts\python.exe" -m aura.gui_web %*
+".venv\Scripts\python.exe" -m aura %*
 pause

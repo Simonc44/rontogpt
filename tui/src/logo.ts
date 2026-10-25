@@ -29,4 +29,3 @@ export const LOGO: readonly string[] = [
 
 export const LOGO_LARGEUR = 43;
 export const LOGO_HAUTEUR = 20;
-export const SLOGAN = "Intégration d'IA Avancée";

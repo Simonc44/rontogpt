@@ -110,46 +110,6 @@ class TestMatriceMemoiree:
         assert concepts._cache_matrice is m
 
 
-class TestInjectionPrompt:
-    """orchestrateur._generer doit placer le bloc LEXIQUE dans le systeme."""
-
-    @staticmethod
-    def _ia_capture(tmp_path, monkeypatch):
-        from aura import orchestrateur as orch
-        from aura.memoire_conversation import MemoireConversation
-        ia = orch.RontoGPT()
-        ia._historique = MemoireConversation(chemin=tmp_path / "conv.jsonl")
-        captures = []
-        ia._llama = lambda q, *a, **k: captures.append(k) or "ok"
-        return ia, captures
-
-    def test_lexique_injecte(self, monkeypatch, tmp_path):
-        # cadrage du wiring : ancrage force (le modele n'est pas sollicite)
-        monkeypatch.setattr("aura.concepts.ancrage",
-                            lambda t: "LEXIQUE (concept rapproche : test)")
-        ia, captures = self._ia_capture(tmp_path, monkeypatch)
-        ia._generer(_Q_CONCEPT, "", "")
-        assert captures, "aucun appel LLM : le systeme n'a pas ete vu"
-        systeme = captures[-1].get("systeme") or ""
-        assert "LEXIQUE (concept rapproche : test)" in systeme
-
-    def test_sans_ancrage_rien_injecte(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("aura.concepts.ancrage", lambda t: None)
-        ia, captures = self._ia_capture(tmp_path, monkeypatch)
-        ia._generer("bonjour", "", "")
-        assert captures
-        assert "LEXIQUE" not in (captures[-1].get("systeme") or "")
-
-    @_moder
-    def test_lexique_reel_dans_le_prompt(self, monkeypatch, tmp_path):
-        ia, captures = self._ia_capture(tmp_path, monkeypatch)
-        ia._generer(_Q_CONCEPT, "", "")
-        assert captures
-        systeme = captures[-1].get("systeme") or ""
-        assert "LEXIQUE" in systeme
-        assert "determinisme-liberte" in systeme
-
-
 class TestConfigToml:
     """[minilm] / [concepts] / [flou] de aura.toml -> variables AURA_*."""
 

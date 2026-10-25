@@ -4,6 +4,7 @@
 import re
 from datetime import datetime
 from . import llama_cerveau
+from . import skills as _skills
 from .detection_demande import (
     _sans_accents
 )
@@ -11,19 +12,18 @@ from .detection_demande import (
 
 
 # Questions d'identite (« qui es tu », « qui t'a cree ») : reponse non
-# hallucinable — tiree d'une constante, jamais des poids du 1B.
-_IDENTITE = "RontoGPT, l'assistant local créé par Simon. J'assemble un " \
-    "cerveau de langage local avec des outils de calcul, de recherche et de " \
-    "verification. Mon createur est Simon (Simonc44). La recherche Web et " \
-    "certaines APIs necessitent une connexion Internet."
+# hallucinable — tiree du skill `identite` (skills.toml), jamais des poids
+# du 1B. Le modele de base est nomme honnetement, sans revendiquer Google.
+_IDENTITE = _skills.IDENTITE
 _MOTS_IDENTITE = ("qui es tu", "qui es-tu", "qui t'a", "qui t'a cree",
-                  "qui t'a cree", "ton createur", "ton nom", "tu t'appelles",
-                  "tu es qui")
+                  "ton createur", "ton nom", "tu t'appelles", "tu es qui")
 
 # identite tolerante aux fautes (« qui est tu », « t'es qui », « presente toi »)
 _RE_IDENTITE = re.compile(
     r"\b(qui\s+(?:es|est|etes)[- ]?(?:tu|vous)\b|t'?es\s+qui\b|"
-    r"presente[- ]?(?:toi|vous)\b|comment\s+tu\s+t'?appelles?\b)")
+    r"presente[- ]?(?:toi|vous)\b|"
+    r"(?:peux|pourrais)[- ]?tu\s+te\s+presenter\b|"
+    r"comment\s+tu\s+t'?appelles?\b)")
 # une suite de conversation (« et lui ? », « ca marche comment ») depend du
 # tour precedent : jamais mise en cache
 _RE_SUITE_CONVERSATION = re.compile(
@@ -41,8 +41,22 @@ _RE_CAPACITES = re.compile(
     r"a quoi (?:sers|peux tu servir)|"
     r"quelles taches|quels types de taches)\b", re.IGNORECASE)
 _RE_CAPACITE_MODELE = re.compile(
-    r"\b(plus puissant|puissance|performances|taille du modele|"
-    r"quel modele|combien de parametres|\d{1,3}[\s-]?b|"
+    # « puissance » et « performances » doivent viser LE MODELE : nus, ils
+    # attrapaient toute question qui parle de puissance ou de rendement.
+    # Defaut reel mesure par scripts/bench_qualite.py : « La puissance de la
+    # technologie est-elle une menace… Redige une dissertation » (17 mots)
+    # recevait la reponse-constante d'identite au lieu d'une dissertation,
+    # alors que `_est_meta_ia` dit correctement que ce n'est PAS une question
+    # meta (cf. tests/test_disjoncteur.py).
+    r"\b(plus puissant|"
+    # Comparaison DIRECTE avec un autre assistant : question fermee sur le
+    # modele, elle merite la reponse-constante (0 s). Sans ce motif,
+    # « Tu es plus fort que ChatGPT ? » partait au 1B et rendait 7-34 s de
+    # digression (echec meta-capacite du banc : cible < 5 s).
+    r"(?:plus |aussi )?(?:fort|bon|meilleur) (?:que|qu')\s*"
+    r"(?:chatgpt|gpt[- ]?\d*|claude|gemini|copilot|mistral|deepseek)|"
+    r"(?:ta|tes|ton|votre|vos)\s+(?:puissance|performances?)|"
+    r"taille du modele|quel modele|combien de parametres|\d{1,3}[\s-]?b|"
     r"aussi puissant|es[- ]tu une ia|es[- ]tu une intelligence artificielle)\b",
     re.IGNORECASE)
 

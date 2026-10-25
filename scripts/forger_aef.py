@@ -152,7 +152,6 @@ def _pack_config(gguf: Path | None = None,
         "taille_gguf_octets": gguf.stat().st_size if gguf else 0,
         "quantification": _quantification(gguf.name) if gguf else "inconnue",
         "niveau0_seuil": 0.85,
-        "mode_riche_seuil_mots": 9,
         "max_tokens_faits": 120, "max_tokens_explications": 320,
         "build": ".".join(map(str, VERSION)),
         "machine": pm.empreinte(profil),          # provenance (pc de forge)

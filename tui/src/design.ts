@@ -24,6 +24,155 @@ export type Segment =
   /** `brut` : la ligne d'origine, quand aucun lien n'a pu être extrait. */
   | { type: "sources"; sources: Source[]; brut: string | null };
 
+// -- markdown : le texte enrichi d'une reponse ---------------------------------
+// Le cerveau ecrit du markdown simple (**gras**, *italique*, `code`, [lien](url),
+// titres, listes, citations). On le DECODE ici, sans OpenTUI : l'affichage ne
+// recoit que des morceaux deja styles, et la logique se teste seule.
+
+export interface InlineSpan {
+  texte: string;
+  gras?: boolean;
+  italique?: boolean;
+  code?: boolean;
+  barre?: boolean;
+  lien?: string;
+}
+
+export type LigneMarkdown =
+  | { genre: "vide" }
+  | { genre: "titre"; niveau: number; spans: InlineSpan[] }
+  | { genre: "puce"; marque: string; retrait: number; spans: InlineSpan[] }
+  | { genre: "numero"; marque: string; retrait: number; spans: InlineSpan[] }
+  | { genre: "citation"; spans: InlineSpan[] }
+  | { genre: "regle" }
+  | { genre: "texte"; spans: InlineSpan[] };
+
+const RE_CODE_INLINE = /^`([^`\n]+)`/;
+const RE_LIEN_INLINE = /^\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/;
+// Les marqueurs doivent encadrer du texte SANS espace collé : sans ça,
+// « 2 * 3 * 4 » deviendrait de l'italique. (Le `__gras__` n'est pas reconnu :
+// il casserait `__init__` et `__name__`, trop fréquents dans les réponses.)
+const RE_GRAS = /^\*\*(?!\s)([\s\S]+?)(?<!\s)\*\*/;
+const RE_BARRE = /^~~(?!\s)([\s\S]+?)(?<!\s)~~/;
+const RE_ITALIQUE = /^\*(?!\s)([^*\n]+?)(?<!\s)\*/;
+const RE_ITALIQUE_SOULIGNE = /^_(?!_|\s)([^_\n]+?)(?<![\s_])_(?![\w_])/;
+const RE_URL_NUE = /^https?:\/\/[^\s)\]]+/;
+
+/**
+ * Decoupe une ligne en morceaux styles (gras, italique, code, lien, barre).
+ * Les marqueurs sont retires : l'ecran ne montre jamais `**` ni `[texte](url)`.
+ * Volontairement simple : une imbrication est relue recursivement, mais les
+ * cas tordus (marqueurs echappes, tableaux) restent du texte.
+ */
+export function analyserInline(texte: string, base: Partial<InlineSpan> = {}): InlineSpan[] {
+  const spans: InlineSpan[] = [];
+  let tampon = "";
+  let i = 0;
+  const vider = (): void => {
+    if (tampon !== "") {
+      spans.push({ ...base, texte: tampon });
+      tampon = "";
+    }
+  };
+
+  while (i < texte.length) {
+    const reste = texte.slice(i);
+    let m: RegExpExecArray | null;
+
+    if ((m = RE_CODE_INLINE.exec(reste)) !== null) {
+      vider();
+      spans.push({ ...base, texte: m[1] ?? "", code: true });
+      i += m[0].length;
+      continue;
+    }
+    if ((m = RE_LIEN_INLINE.exec(reste)) !== null) {
+      vider();
+      spans.push({ ...base, texte: m[1] ?? "", lien: m[2] ?? "" });
+      i += m[0].length;
+      continue;
+    }
+    if ((m = RE_GRAS.exec(reste)) !== null) {
+      vider();
+      spans.push(...analyserInline(m[1] ?? "", { ...base, gras: true }));
+      i += m[0].length;
+      continue;
+    }
+    if ((m = RE_BARRE.exec(reste)) !== null) {
+      vider();
+      spans.push(...analyserInline(m[1] ?? "", { ...base, barre: true }));
+      i += m[0].length;
+      continue;
+    }
+    if ((m = RE_ITALIQUE.exec(reste)) !== null) {
+      vider();
+      spans.push(...analyserInline(m[1] ?? "", { ...base, italique: true }));
+      i += m[0].length;
+      continue;
+    }
+    // `_italique_` seulement s'il ouvre un mot : sinon `rag_binaire` deviendrait
+    // de l'italique. C'est le piege des identifiants techniques.
+    const debutMot = i === 0 || !/[\w_]/.test(texte[i - 1] ?? "");
+    if (debutMot && (m = RE_ITALIQUE_SOULIGNE.exec(reste)) !== null) {
+      vider();
+      spans.push(...analyserInline(m[1] ?? "", { ...base, italique: true }));
+      i += m[0].length;
+      continue;
+    }
+    if ((m = RE_URL_NUE.exec(reste)) !== null) {
+      vider();
+      const brut = m[0];
+      const url = brut.replace(/[.,;:!?]+$/, "");
+      spans.push({ ...base, texte: url, lien: url });
+      tampon += brut.slice(url.length);      // la ponctuation reste du texte
+      i += brut.length;
+      continue;
+    }
+    tampon += texte[i] ?? "";
+    i += 1;
+  }
+  vider();
+  return spans;
+}
+
+/**
+ * Decoupe une reponse en lignes typées : titres, puces, numeros, citations,
+ * regles, lignes vides et paragraphes. Les blocs de code sont deja sortis par
+ * `decouper` : ce analyseur ne voit que le texte courant.
+ */
+export function analyserMarkdown(texte: string): LigneMarkdown[] {
+  return texte.replace(/\r\n?/g, "\n").split("\n").map((ligne): LigneMarkdown => {
+    if (ligne.trim() === "") return { genre: "vide" };
+
+    const titre = /^\s{0,3}(#{1,6})\s+(.*)$/.exec(ligne);
+    if (titre !== null) {
+      return { genre: "titre", niveau: (titre[1] ?? "#").length, spans: analyserInline((titre[2] ?? "").trim()) };
+    }
+    if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(ligne)) return { genre: "regle" };
+
+    const puce = /^(\s*)[-*+]\s+(.*)$/.exec(ligne);
+    if (puce !== null) {
+      let contenu = (puce[2] ?? "").trim();
+      let marque = "•";
+      const tache = /^\[([ xX])\]\s+(.*)$/.exec(contenu);
+      if (tache !== null) {
+        marque = (tache[1] ?? " ").toLowerCase() === "x" ? "☑" : "☐";
+        contenu = tache[2] ?? "";
+      }
+      return { genre: "puce", marque, retrait: Math.min(6, Math.floor((puce[1] ?? "").length / 2)), spans: analyserInline(contenu) };
+    }
+
+    const numero = /^(\s*)(\d+)[.)]\s+(.*)$/.exec(ligne);
+    if (numero !== null) {
+      return { genre: "numero", marque: `${numero[2] ?? "1"}.`, retrait: Math.min(6, Math.floor((numero[1] ?? "").length / 2)), spans: analyserInline(numero[3] ?? "") };
+    }
+
+    const citation = /^\s*>\s?(.*)$/.exec(ligne);
+    if (citation !== null) return { genre: "citation", spans: analyserInline(citation[1] ?? "") };
+
+    return { genre: "texte", spans: analyserInline(ligne) };
+  });
+}
+
 /** ```langue\n…``` — même expression que `aura/gui.py` (_RE_CODE_FENCE). */
 const RE_CODE = /```(\w*)\s*\n([\s\S]*?)```/g;
 

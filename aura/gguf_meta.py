@@ -70,6 +70,61 @@ def lire(chemin: str | Path, tout: bool = False) -> dict:
     return meta
 
 
+def lire_selection(chemin: str | Path, prefixes: tuple[str, ...]) -> dict:
+    """Metadonnees dont la cle commence par l'un des `prefixes`.
+
+    Les autres valeurs sont SAUTEES sans etre decodees (tableaux compris) :
+    detecter une table Engram (`<famille>.ple.*`) ne doit pas charger le
+    vocabulaire de 200 000 tokens ni le chat_template. Contrairement a
+    `lire()`, les tableaux RETENUS sont rendus element par element, pas sous
+    forme de `<N elements>`.
+    """
+    meta: dict = {}
+    with open(chemin, "rb") as f:
+        if f.read(4) != b"GGUF":
+            raise ValueError(f"{chemin} n'est pas un GGUF (magic absent)")
+        f.read(4)                                    # version
+        _, n_kv = struct.unpack("<QQ", f.read(16))
+        for _ in range(n_kv):
+            n = struct.unpack("<Q", f.read(8))[0]
+            nom = f.read(n).decode("utf-8", "replace")
+            t = struct.unpack("<I", f.read(4))[0]
+            if nom.startswith(prefixes):
+                meta[nom] = _valeur(f, t, True)
+            else:
+                _sauter(f, t)                        # consomme sans decoder
+    return meta
+
+
+def _sauter(f, t: int) -> None:
+    """Avance au-dela d'une valeur GGUF SANS la decoder.
+
+    `_valeur(..., profond=False)` saute les tableaux de types fixes, mais
+    pas les tableaux de CHAINES (`tokenizer.ggml.tokens`, ~200 000 entrees)
+    qu'il decode une par une. Les ignorer vraiment demande de lire chaque
+    longueur et de se deplacer : c'est ce que fait cette fonction.
+    """
+    if t == 8:                                       # chaine
+        f.seek(struct.unpack("<Q", f.read(8))[0], 1)
+        return
+    if t == 9:                                       # tableau
+        type_elem = struct.unpack("<I", f.read(4))[0]
+        n = struct.unpack("<Q", f.read(8))[0]
+        if type_elem == 8:                           # tableau de chaines
+            for _ in range(n):
+                f.seek(struct.unpack("<Q", f.read(8))[0], 1)
+            return
+        taille = _TAILLE.get(type_elem)
+        if taille is None:
+            raise ValueError(f"type GGUF de tableau inconnu : {type_elem}")
+        f.seek(taille * n, 1)
+        return
+    fmt = _FMT.get(t)
+    if fmt is None:
+        raise ValueError(f"type GGUF inconnu : {t}")
+    f.seek(struct.calcsize(fmt), 1)
+
+
 def _valeur(f, t: int, profond: bool):
     """Une valeur GGUF. `profond=False` saute le CONTENU des tableaux longs
     (vocabulaire, template) : on garde leur NOMBRE, pas leurs elements."""

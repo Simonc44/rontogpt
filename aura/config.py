@@ -50,6 +50,14 @@ _CLES: dict[tuple[str, str], str] = {
     ("llama", "gguf"): "AURA_GGUF",
     ("llama", "chemin"): "AURA_GGUF_CHEMIN",
     ("llama", "gpu"): "AURA_GPU",
+    # Verrouillage des poids en RAM : use_mlock cote in-process,
+    # --load-mode mmap+mlock cote llama-server. Une seule cle pour les deux
+    # chemins, sinon la MEME config donnait deux empreintes memoire selon
+    # celui qui repondait.
+    ("llama", "mlock"): "AURA_MLOCK",
+    # Prompt systeme : "defaut" (mesure sur le 1B) ou "fr" (variante Gemini 3,
+    # a reserver a un cerveau plus grand / aux adaptateurs formes dessus).
+    ("llama", "systeme"): "AURA_SYSTEME",
     ("serveur", "actif"): "AURA_SERVEUR",
     ("serveur", "adresse"): "AURA_SERVEUR_ADRESSE",
     # AURA_SERVEUR_SPEC = speculative decoding COTE SERVEUR (rentable :
@@ -59,7 +67,15 @@ _CLES: dict[tuple[str, str], str] = {
     ("qualite", "budget_s"): "AURA_BUDGET_S",
     ("qualite", "verif_web"): "AURA_VERIF_WEB",
     ("qualite", "agents"): "AURA_AGENTS",
+    # Redactions longues (dissertation, essai, analyse) : Gemini d'emblee
+    # au lieu des trois blocs locaux. Opt-in explicite : le sujet quitte
+    # l'ordinateur. AURA_CLOUD=non reste prioritaire.
+    ("qualite", "redaction_gemini"): "AURA_GEMINI_REDACTION",
     ("qualite", "seuil_confiance"): "AURA_SEUIL_CONFIANCE",
+    # Compaction automatique a 90 % (aura/contexte.py) :
+    # "importance" oublie les echanges vieux ou peu importants ;
+    # "recent" garde simplement les derniers tours.
+    ("memoire", "compaction"): "AURA_COMPACTION",
     # Majorite d'experts (self-consistency) sur puzzles/enigmes :
     # N echantillons valides par les solveurs, vote sur la reponse.
     ("qualite", "majorite"): "AURA_MAJORITE_N",

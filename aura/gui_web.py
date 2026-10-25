@@ -88,6 +88,7 @@ class Api:
 
     def __init__(self) -> None:
         self._ia: Any = None          # RontoGPT charge en tache de fond
+        self._erreur: str | None = None
         self._fenetre: "webview.Window | None" = None
 
     # ---------------- cycle de vie de la fenêtre (barre custom) ----------------
@@ -144,7 +145,18 @@ class Api:
             self._pousser("aura_pret", {"latence": round(time.time() - t0, 1)})
             self._verifier_maj()
         except Exception as e:  # noqa: BLE001
+            self._erreur = str(e)
             self._pousser("aura_erreur", {"message": str(e)})
+
+    def etat(self) -> dict[str, Any]:
+        """État du chargement, interrogeable par le JS.
+
+        Un évènement poussé (`aura_pret`) peut partir AVANT que la page ait
+        défini `window.auraEvenement` : il serait alors perdu et l'interface
+        resterait sur « chargement... ». Le JS interroge donc cette méthode
+        jusqu'à ce que le cerveau soit prêt (ou en erreur).
+        """
+        return {"prete": self._ia is not None, "erreur": self._erreur}
 
     def _verifier_maj(self) -> None:
         """Pousse 'maj_disponible' vers le JS si une release plus recente
@@ -209,6 +221,65 @@ class Api:
                     desabonner()
                 except Exception:  # noqa: BLE001
                     pass
+
+    # ---------------- documents locaux (RAG) ----------------
+    # Les tests appellent ces méthodes sans pywebview : les imports sont donc
+    # locaux, et le type de dialogue a une valeur de repli (OPEN_DIALOG = 10).
+    @staticmethod
+    def _documents():
+        try:
+            from . import documents
+        except ImportError:               # lancement en script direct
+            from aura import documents
+        return documents
+
+    def documents_liste(self) -> dict[str, Any]:
+        try:
+            return {"ok": True, "fichiers": self._documents().lister()}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "erreur": str(e), "fichiers": []}
+
+    def documents_ajouter(self) -> dict[str, Any]:
+        """Ouvre le sélecteur de fichiers, indexe ce qui a été choisi."""
+        try:
+            import webview
+            type_dialogue = webview.OPEN_DIALOG
+        except Exception:                 # pywebview absent (tests)
+            type_dialogue = 10            # webview.OPEN_DIALOG
+        if self._fenetre is None:
+            return {"ok": False, "erreur": "fenêtre indisponible", "fichiers": []}
+        try:
+            choix = self._fenetre.create_file_dialog(
+                type_dialogue, allow_multiple=True,
+                file_types=("Documents (*.pdf;*.txt;*.md;*.json;*.csv)",
+                            "Tous les fichiers (*.*)"))
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "erreur": str(e), "fichiers": []}
+        if not choix:
+            return {"ok": False, "erreur": "annule", "fichiers": []}
+        documents = self._documents()
+        ajoutes, erreurs = 0, []
+        for chemin in choix:
+            try:
+                documents.ajouter(chemin)
+                ajoutes += 1
+            except Exception as e:  # noqa: BLE001
+                erreurs.append(f"{Path(chemin).name} : {e}")
+        try:
+            fichiers = documents.lister()
+        except Exception:  # noqa: BLE001
+            fichiers = []
+        return {"ok": ajoutes > 0, "ajoutes": ajoutes,
+                "erreurs": erreurs, "fichiers": fichiers}
+
+    def documents_supprimer(self, nom: str) -> dict[str, Any]:
+        try:
+            documents = self._documents()
+            supprimes = documents.supprimer(nom)
+            return {"ok": supprimes > 0, "supprimes": supprimes,
+                    "fichiers": documents.lister()}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "erreur": str(e), "supprimes": 0, "fichiers": []}
 
     # ---------------- pousser un évènement vers JS depuis un thread Python ----------------
     def _pousser(self, evenement: str, donnees: dict) -> None:

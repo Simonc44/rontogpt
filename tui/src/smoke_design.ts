@@ -9,7 +9,7 @@
 import { RGBA } from "@opentui/core";
 import type { CapturedSpan } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
-import { decouper } from "./design";
+import { analyserInline, analyserMarkdown, decouper } from "./design";
 import type { Segment } from "./design";
 import { TH, creerCorps, creerStyleCode } from "./affichage";
 import { controle, terminer } from "./smoke_commun";
@@ -117,6 +117,54 @@ controle("un ``` au milieu d'une phrase reste du texte",
   decouper("Utilise ``` pour ouvrir un bloc.").every((s) => s.type === "texte"),
   "aucun cadre parasite");
 
+// -- 1 bis. markdown : gras, italique, code, liens, titres, listes ----------
+const MARKDOWN = [
+  "# Titre principal",
+  "",
+  "Voici du **gras**, de l'*italique*, du `code inline`, ~~barre~~ et un [lien](https://exemple.fr).",
+  "",
+  "## Sous-titre",
+  "",
+  "- premier point",
+  "- **point gras**",
+  "  - sous-point",
+  "1. etape une",
+  "2. etape deux",
+  "",
+  "> une citation",
+  "",
+  "---",
+  "",
+  "Un identifiant rag_binaire reste intact.",
+].join("\n");
+
+const lignesMd = analyserMarkdown(MARKDOWN);
+const inline = analyserInline("**gras** *italique* `code` [lien](https://ex.fr) rag_binaire _vraiment_");
+controle("markdown : titres, puces, numeros, citation et regle sont reconnus",
+  lignesMd.some((l) => l.genre === "titre" && l.niveau === 1)
+  && lignesMd.some((l) => l.genre === "titre" && l.niveau === 2)
+  && lignesMd.some((l) => l.genre === "puce" && l.marque === "•" && l.retrait === 1)
+  && lignesMd.some((l) => l.genre === "numero" && l.marque === "1.")
+  && lignesMd.some((l) => l.genre === "citation")
+  && lignesMd.some((l) => l.genre === "regle"),
+  lignesMd.map((l) => l.genre).join(", "));
+controle("markdown : gras, italique, code et lien deviennent des styles",
+  inline.some((s) => s.texte === "gras" && s.gras === true)
+  && inline.some((s) => s.texte === "italique" && s.italique === true)
+  && inline.some((s) => s.texte === "code" && s.code === true)
+  && inline.some((s) => s.texte === "lien" && s.lien === "https://ex.fr")
+  && inline.some((s) => s.texte === "vraiment" && s.italique === true),
+  inline.map((s) => `${s.texte}${s.gras ? "(g)" : ""}${s.italique ? "(i)" : ""}${s.code ? "(c)" : ""}${s.lien ? "(l)" : ""}`).join(" "));
+controle("markdown : un identifiant comme rag_binaire n'est pas casse",
+  inline.some((s) => s.texte.includes("rag_binaire") && s.italique !== true)
+  && !inline.some((s) => s.italique === true && s.texte.includes("binaire")));
+const pieges = analyserInline("2 * 3 * 4, __init__ et __name__");
+controle("markdown : multiplication et dunders restent du texte brut",
+  pieges.every((s) => s.gras !== true && s.italique !== true)
+  && pieges.map((s) => s.texte).join("").includes("2 * 3 * 4")
+  && pieges.map((s) => s.texte).join("").includes("__init__"),
+  pieges.map((s) => s.texte).join(""));
+
 const spansDe = (): CapturedSpan[] => ecran.captureSpans().lines.flatMap((l) => l.spans);
 const aLaCouleur = (liste: CapturedSpan[], hex: string): boolean => {
   const [r, g, b] = RGBA.fromHex(hex).toInts();
@@ -149,6 +197,29 @@ controle("la fuite d'échafaudage s'affiche cadrée, sans marqueur à l'écran",
   frameFuite.includes("def recherche_web(url):") && frameFuite.includes("python")
   && !frameFuite.includes("```"),
   "bloc cadré et étiqueté");
+
+corps.peindre(MARKDOWN);
+await ecran.flush();
+const frameMd = ecran.captureCharFrame();
+const spansMd = ecran.captureSpans().lines.flatMap((l) => l.spans);
+controle("markdown : aucun marqueur brut ne reste a l'ecran",
+  !frameMd.includes("**") && !frameMd.includes("*italique*") && !frameMd.includes("`code")
+  && !frameMd.includes("[lien]") && !frameMd.includes("## ") && !frameMd.includes("> une"),
+  "marqueurs retires");
+controle("markdown : le contenu reste lisible (titres, puces, citation)",
+  frameMd.includes("Titre principal") && frameMd.includes("Sous-titre")
+  && frameMd.includes("premier point") && frameMd.includes("sous-point")
+  && frameMd.includes("etape une") && frameMd.includes("une citation")
+  && frameMd.includes("rag_binaire"),
+  "texte visible");
+controle("markdown : puces et titres prennent la couleur d'accent",
+  aLaCouleur(spansMd, TH.accent), `accent ${TH.accent}`);
+controle("markdown : le code inline a un fond distinct",
+  spansMd.some((s) => {
+    const [r, g, b] = s.bg.toInts();
+    const [br, bgc, bb] = RGBA.fromHex(TH.codeFond).toInts();
+    return r === br && g === bgc && b === bb;
+  }), `fond ${TH.codeFond}`);
 
 await ecran.dispose();
 

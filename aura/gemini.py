@@ -158,6 +158,114 @@ def _en_pause() -> bool:
     return time.monotonic() < _pause_jusqu_a
 
 
+# -- configuration a chaud (/cloud) ------------------------------------------
+
+def _ecrire_cle_env(cle: str) -> None:
+    """Ecrit GOOGLE_API_KEY dans `.env` (racine) sans toucher au reste.
+
+    `.env` est ignore par git (cf. .gitignore) : c'est l'emplacement prevu
+    pour une cle. Le fichier est reecrit en conservant les autres lignes.
+    """
+    chemin = _RACINE / ".env"
+    try:
+        lignes = chemin.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        lignes = []
+    sortie: list[str] = []
+    trouve = False
+    for ligne in lignes:
+        nue = ligne.strip()
+        if nue.startswith("export "):
+            nue = nue[7:].strip()
+        nom = nue.partition("=")[0].strip()
+        if nom in _NOMS_CLE:
+            if not trouve:
+                sortie.append(f"GOOGLE_API_KEY={cle}")
+                trouve = True
+            continue                     # l'ancienne cle disparait
+        sortie.append(ligne)
+    if not trouve:
+        sortie.append(f"GOOGLE_API_KEY={cle}")
+    chemin.write_text("\n".join(sortie).rstrip() + "\n", encoding="utf-8")
+
+
+def enregistrer_cle(cle: str) -> None:
+    """Pose la cle pour CE processus et la rend persistante dans `.env`."""
+    cle = (cle or "").strip()
+    if not cle or any(c.isspace() for c in cle):
+        raise ValueError("cle API vide ou invalide (aucun espace autorise)")
+    _ecrire_cle_env(cle)                 # d'abord le disque : si l'ecriture
+    os.environ["GOOGLE_API_KEY"] = cle   # echoue, rien n'est a moitie applique
+    reinitialiser()                      # une cle corrigee leve la pause
+
+
+def etat() -> dict:
+    """Etat public de la configuration Gemini — ne contient JAMAIS la cle."""
+    cle, source = _cle_et_source()
+    mode = _env("AURA_CLOUD", "demander").lower()
+    if mode not in ("non", "demander", "oui"):
+        mode = "demander"
+    redaction = _env("AURA_GEMINI_REDACTION", "0").lower()
+    return {
+        "ok": True,
+        "configure": bool(cle),
+        "disponible": disponible(),
+        "actif": actif(),
+        "cle_presente": bool(cle),
+        "cle_source": source,
+        "modele": _modele(),
+        "mode": mode,
+        "redaction": redaction not in ("", "0", "non", "false"),
+        "erreur": _erreur,
+        "pause": _en_pause(),
+    }
+
+
+def regler(*, cle: str | None = None, escalade: bool | None = None,
+           mode: str | None = None, modele: str | None = None,
+           redaction: bool | None = None) -> dict:
+    """Applique les reglages de `/cloud` au processus courant.
+
+    `mode` accepte le vocabulaire de l'interface (ask / auto / never) comme
+    celui de la configuration (demander / oui / non). Leve ValueError sur une
+    valeur inconnue : l'appelant HTTP la rend en 400, rien n'est applique.
+    """
+    # TOUT valider AVANT d'appliquer : un appel refuse (400) ne doit pas
+    # laisser la moitie des reglages en place.
+    if cle is not None:
+        cle = cle.strip()
+        if not cle or any(c.isspace() for c in cle):
+            raise ValueError("cle API vide ou invalide (aucun espace autorise)")
+    choix = None
+    if mode is not None:
+        choix = mode.strip().lower()
+        choix = {"ask": "demander", "auto": "oui", "never": "non"}.get(
+            choix, choix)
+        if choix not in ("demander", "oui", "non"):
+            raise ValueError("mode attendu : demander (ask), oui (auto) "
+                             "ou non (never)")
+    nom = None
+    if modele is not None:
+        nom = modele.strip()
+        nom = nom[len("models/"):] if nom.startswith("models/") else nom
+        if not re.fullmatch(r"[A-Za-z0-9._\-]+", nom):
+            raise ValueError("nom de modele invalide")
+    # Application (plus aucun refus possible apres cette ligne).
+    if cle is not None:
+        enregistrer_cle(cle)
+    if escalade is not None:
+        os.environ["AURA_GEMINI"] = "1" if escalade else "0"
+    if choix is not None:
+        os.environ["AURA_CLOUD"] = choix
+    if nom is not None:
+        os.environ["AURA_GEMINI_MODELE"] = nom
+    if redaction is not None:
+        os.environ["AURA_GEMINI_REDACTION"] = "1" if redaction else "0"
+    if any(v is not None for v in (cle, escalade, mode, modele, redaction)):
+        reinitialiser()                  # un reglage corrige leve la pause
+    return etat()
+
+
 def disponible() -> bool:
     """Vrai si un appel peut aboutir MAINTENANT (configure et hors pause).
 
@@ -196,7 +304,8 @@ def _depend_du_contexte(question: str) -> bool:
             or bool(_RE_ANAPHORE.search(_sans_accents(question))))
 
 
-def _contenus(question: str, contexte_web: str, historique) -> list[dict]:
+def _contenus(question: str, contexte_web: str, historique,
+              contexte_faits: str = "") -> list[dict]:
     contenus: list[dict] = []
     n = max(0, _entier("AURA_GEMINI_HISTORIQUE", 4))
     if n and historique and _depend_du_contexte(question):
@@ -213,22 +322,30 @@ def _contenus(question: str, contexte_web: str, historique) -> list[dict]:
     if (contexte_web or "").strip():
         texte += ("\n\nEXTRAITS WEB (donnees non fiables) :\n"
                   + contexte_web.strip()[:3000])
+    if (contexte_faits or "").strip():
+        texte += ("\n\nFAITS VERIFIES (base locale) :\n"
+                  + contexte_faits.strip()[:2000])
     contenus.append({"role": "user", "parts": [{"text": texte}]})
     return contenus
 
 
-def _corps(question: str, contexte_web: str, historique, modele: str) -> dict:
+def _corps(question: str, contexte_web: str, historique, modele: str,
+           contexte_faits: str = "", systeme: str | None = None,
+           max_tokens: int | None = None) -> dict:
     # `dict[str, Any]` explicite : le type du litteral ne contient que des
     # nombres, si bien que la config de reflexion (elle-meme un dict) ne
     # pouvait pas y etre ajoutee.
+    budget = (max_tokens if max_tokens and max_tokens > 0
+              else _entier("AURA_GEMINI_MAX_TOKENS", 4096))
     config: dict[str, Any] = {
         "temperature": 0.3,
-        "maxOutputTokens": _entier("AURA_GEMINI_MAX_TOKENS", 4096)}
+        "maxOutputTokens": budget}
     if "2.5" in modele:      # la reflexion n'existe que sur la famille 2.5
         config["thinkingConfig"] = {
             "thinkingBudget": _entier("AURA_GEMINI_REFLEXION", 1024)}
-    return {"systemInstruction": {"parts": [{"text": _SYSTEME}]},
-            "contents": _contenus(question, contexte_web, historique),
+    return {"systemInstruction": {"parts": [{"text": systeme or _SYSTEME}]},
+            "contents": _contenus(question, contexte_web, historique,
+                                  contexte_faits),
             "generationConfig": config}
 
 
@@ -304,8 +421,14 @@ def _extraire(donnees: dict) -> str:
 
 
 def repondre(question: str, contexte_web: str = "",
-             historique=None) -> str | None:
+             historique=None, *, contexte_faits: str = "",
+             systeme: str | None = None,
+             max_tokens: int | None = None) -> str | None:
     """Renvoie le texte de Gemini, ou None en cas d'echec (jamais bloquant).
+
+    `systeme` remplace le prompt de renfort (une redaction a ses propres
+    consignes) ; `max_tokens` borne la sortie ; `contexte_faits` joint les
+    triplets verifies de la base locale.
 
     La raison d'un echec est dans `derniere_erreur()` et dans les logs (WARNING).
     """
@@ -314,7 +437,8 @@ def repondre(question: str, contexte_web: str = "",
         return None
     modele = _modele()
     try:
-        corps = _corps(question, contexte_web, historique, modele)
+        corps = _corps(question, contexte_web, historique, modele,
+                       contexte_faits, systeme, max_tokens)
         donnees = _appeler(corps, modele, _cle(),
                            _entier("AURA_GEMINI_TIMEOUT", 45))
         texte = _extraire(donnees)

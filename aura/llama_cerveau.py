@@ -1,10 +1,9 @@
 """Cerveau 1B local — optimise CPU (flash attention, KV cache q8_0).
 
-CERCEAU PAR DEFAUT : Gemma-3-1B-it-GLM-4.7-Flash-Heretic-Uncensored-Thinking
-(Q4_K_M, 806 Mo, 26 couches / dim 1152 / 4 tetes / ctx 32768). Ce modele
-RAISONNE nativement en `<think>...</think>` : la reflexion fait partie de sa
-reponse, ce qui est exactement ce que le flux doit montrer a l'utilisateur
-(cf. aura/flux_cerveau.py, ou vit ce bus depuis le 16 oct. 2026).
+CERCEAU PAR DEFAUT : unsloth/gemma-3-1b-it-GGUF en Q8_0
+(gemma-3-1b-it-Q8_0.gguf, ~1 Go, 26 couches / dim 1152 / ctx 32768).
+Le prompt systeme est FIXE (« You are a helpful assistant. ») et la
+temperature est FIXEE a 1.0 : plus de personnalite composee par categorie.
 
 L'ancien cerveau (Llama 3.2 1B Instruct) reste sur le disque et reste
 selectionnable : `AURA_GGUF=LLAMA`. Le passage d'une famille a l'autre n'est
@@ -21,8 +20,8 @@ Optimisations CPU reelles (benchmarkees sur ce PC) :
 - n_threads=os.cpu_count() : +26% vs coeurs physiques seuls
 
 Optimisations d'intelligence :
-- quantification Q4_K_M (defaut, mesuree 3/3 en raisonnement) ou Q6_K
-  (option, fidele aux poids) via variable AURA_GGUF
+- quantification Q8_0 par defaut (unsloth/gemma-3-1b-it-GGUF) ; les autres
+  fichiers du disque restent selectionnables via AURA_GGUF
 - raisonnement etape par etape injecte pour les questions de logique
 - max_tokens adaptatif : court pour les faits, long pour les explications
 - memoire de conversation (historique multi-tours) via parametre historique
@@ -32,6 +31,7 @@ import contextvars
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -44,6 +44,8 @@ if TYPE_CHECKING:       # jamais importe au runtime : la memoire n'est qu'un typ
 # le dict des kwargs passes a _streamer. Le module est la SOURCE des valeurs,
 # le dict n'en est qu'une projection locale.
 from . import echantillonnage as _echantillonnage
+from . import skills as _skills
+from .prompt_systeme import systeme as _systeme_choisi
 
 # POST-TRAITEMENT DU TEXTE GENERE : dans son propre module. Ces fonctions
 # PURES (disjoncteur anti-repetition + canalisation) vivaient ici, au milieu
@@ -86,16 +88,20 @@ _DOSSIER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 # trois endroits — et en oublier un ne produit pas une erreur mais un
 # serveur qui tourne sur l'ANCIEN modele.
 #
-# PAR DEFAUT : Gemma-3-1B « Heretic Uncensored Thinking » (Q4_K_M).
-#   * il raisonne en <think> nativement (le flux peut donc le montrer) ;
-#   * 806 Mo, 26 couches, dim 1152 : meme ordre de cout que l'ancien ;
-#   * ses adaptateurs LoRA sont A RE-ENTRAINER (les 4 du disque sont des
-#     deltas Llama-3.2, refuses et non montes — cf. aura/adaptateurs.py).
-# AURA_GGUF=LLAMA pour revenir a Llama 3.2 1B (+ ses 4 LoRA, compatibles).
+# PAR DEFAUT : Gemma-3-1B-it officiel (unsloth/gemma-3-1b-it-GGUF) en Q8_0.
+#   * aucun  thinking natif : le modele repond directement ;
+#   * 26 couches, dim 1152 : meme architecture gemma3 que l'ancien cerveau ;
+#   * ce n'est PAS un modele « thinking » : pas de  thinking natif.
+# Les anciens cerveaux (Heretic Q4, Llama 3.2, R1-Distill) ont ete retires
+# du disque le 24 oct. 2026 pour liberer 2,7 Go. Leurs cles restent dans
+# _CHEMINS : AURA_GGUF=LLAMA (etc.) ne casse pas, mais retombe sur le Q8
+# tant que le fichier n'a pas ete re-telecharge (scripts/telecharger_llama.py).
+_GEMMA_Q8 = "gemma-3-1b-it-Q8_0.gguf"
 _GEMMA_Q4 = ("Gemma-3-1B-it-GLM-4.7-Flash-Heretic-Uncensored-Thinking"
              "_Q4_k_m.gguf")
 _CHEMINS = {
-    "GEMMA": os.path.join(_DOSSIER, _GEMMA_Q4),
+    "GEMMA": os.path.join(_DOSSIER, _GEMMA_Q8),
+    "GEMMA_Q8_0": os.path.join(_DOSSIER, _GEMMA_Q8),
     "GEMMA_Q4_K_M": os.path.join(_DOSSIER, _GEMMA_Q4),
     "LLAMA": os.path.join(_DOSSIER, "Llama-3.2-1B-Instruct-Q4_K_M.gguf"),
     "Q4_K_M": os.path.join(_DOSSIER, "Llama-3.2-1B-Instruct-Q4_K_M.gguf"),
@@ -107,10 +113,10 @@ _CHEMINS = {
     "R1_DISTILL": os.path.join(_DOSSIER,
                                "DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf"),
 }
-# Defaut = GEMMA : c est le SEUL cerveau dont les 4 adaptateurs LoRA du
-# disque sont compatibles (cf. tests/test_couplage_architecture.py). Un autre
-# cerveau est possible et MESURE (AURA_GGUF=R1_DISTILL : GSM8K juste la ou
-# Gemma se trompe, mais ~51-66 s par enonce et AUCUN adaptateur compatible).
+# Defaut = GEMMA : c est le SEUL cerveau present sur le disque et le seul
+# dont les 4 adaptateurs LoRA sont compatibles (cf.
+# tests/test_couplage_architecture.py). Les autres cles pointent vers des
+# fichiers supprimes : elles retombent sur GEMMA (cf. _CANDIDATS).
 _CLE_CERVEAU = os.environ.get("AURA_GGUF", "GEMMA").upper()
 _CHEMIN_GGUF = _CHEMINS.get(_CLE_CERVEAU, _CHEMINS["GEMMA"])
 
@@ -262,22 +268,12 @@ def _reglages_materiel() -> dict:
         return {"n_ctx": 4096, "n_batch": 768, "n_threads": n,
                 "n_threads_batch": n, "flash_attn": True, "type_kv": 8}
 
-_SYSTEME = (
-    "Tu es RontoGPT, une IA hybride locale specialisee en maths exactes et faits temps reel. "
-    "Reponds toujours a la question posee, en francais si la question est en francais, "
-    "en anglais sinon. Sois concise et utile. "
-    # CANALISATION (mesure du 12 oct. 2026, question « Qui a gagne le tournoi de
-    # Roland-Garros en 2025 ? », contexte web de 3535 car. pourtant present) : la
-    # phrase conditionnelle ci-dessous etait RECOPIEE telle quelle par le 1B —
-    # « ... fourni ci-dessous et est pertinent (WEB / BASE DE FAITS) ... dis-moi
-    # ce que c'est » — au lieu de rediger (82 s pour rendre la question). Regle
-    # desormais INCONDITIONNELLE : plus rien a reciter, et demander l'information
-    # a l'utilisateur est explicitement interdit.
-    "Les donnees jointes a la conversation font foi : reponds avec elles, sans les annoncer. "
-    "N'ecris ni consigne, ni etiquette, ni commentaire sur ta methode, et ne demande "
-    "jamais a l'utilisateur une information que tu peux trouver toi-meme. "
-    "Si on te demande qui tu es, presente-toi comme RontoGPT."
-)
+# PROMPT SYSTEME FIXE : une seule valeur pour tous les tours. La personnalite
+# par categorie, les briques de style, le lexique de concepts et l'etat de
+# conversation ne sont plus composes dans le message systeme.
+# Le contenu vit dans aura/prompt_systeme.py (source unique, aussi lue par le
+# notebook d'adaptateurs). AURA_SYSTEME=fr bascule sur la variante Gemini 3.
+_SYSTEME = _systeme_choisi()
 
 # declencheurs de raisonnement pas-a-pas : les questions de logique/relations
 # sont la faiblesse des petits modeles -> on force la decomposition.
@@ -430,7 +426,11 @@ def _couches_gpu() -> int:
         if not (hasattr(llama_cpp2, "ggml_backend_cuda_init")
                 or hasattr(llama_cpp2, "ggml_backend_vk_init")):
             return 0
-        if os.name == "nt":
+        # `sys.platform` et NON `os.name` : mypy comprend un controle de
+        # plateforme sur `sys.platform` (il ne lit meme pas ce bloc sous Linux),
+        # alors qu'`os.name == "nt"` le laissait analyser et condamnait
+        # `ctypes.windll`, absent des stubs Linux — 1 erreur de plus en CI.
+        if sys.platform == "win32":
             import ctypes
             if not ctypes.windll.d3d12:
                 return 0
@@ -450,24 +450,15 @@ def _couches_gpu() -> int:
         return 0
 
 
-# ── TEMPÉRATURE PAR USAGE ────────────────────────────────────────────
-# Le technique (vote, calcul, code) veut de la DÉTERMINATION, la rédaction
-# un peu de variété. AURA_TEMPERATURE force la valeur partout (debug/banc) ;
-# sinon chaque chemin apporte la sienne (defaut 0.4).
-# Attention : ne jamais descendre à 0.0 sur les essais du vote — 3 essais
-# identiques = un vote sans diversité (mesuré : seed fixe + même prompt =
-# toujours la même sortie, même à temp 0.7).
+# ── TEMPÉRATURE FIXE ─────────────────────────────────────────────────
+# Une seule valeur, pour tous les chemins : 1.0. L'argument `base` et
+# AURA_TEMPERATURE restent acceptes pour ne pas casser les appelants, mais
+# ils sont IGNORES : la temperature du modele ne varie plus.
 
 
 def temperature(base: float | None = None) -> float:
-    """Température effective : AURA_TEMPERATURE > valeur du chemin > 0.4."""
-    env = os.environ.get("AURA_TEMPERATURE", "")
-    if env:
-        try:
-            return max(0.0, float(env))
-        except ValueError:
-            pass
-    return 0.4 if base is None else base
+    """Température du modèle : TOUJOURS 1.0 (arguments ignores)."""
+    return 1.0
 
 
 def llm_charge():
@@ -527,7 +518,7 @@ def _prechauffer(modele, t0: float) -> None:
     try:
         modele.create_chat_completion(
             messages=[{"role": "user", "content": "Bonjour"}],
-            max_tokens=1, temperature=0.0)
+            max_tokens=1, temperature=temperature())
     except Exception as e:
         # Un prechauffage qui echoue ne doit JAMAIS empecher le chargement.
         LOG.debug("prechauffage ignore : %s", e)
@@ -580,6 +571,11 @@ def _charger():
                 type_k=reg["type_kv"],      # KV cache q8_0 : RAM /2
                 type_v=reg["type_kv"],
                 n_gpu_layers=couches_gpu,   # GPU si dispo, sinon 0 (CPU)
+                # mlock : poids verrouilles en RAM (AURA_MLOCK=0 coupe).
+                # Meme garantie cote serveur via --load-mode mmap+mlock
+                # (cf. serveur_lora._args_mlock) : le chemin ACTIF ne doit
+                # pas dependre du chemin choisi pour la residence memoire.
+                use_mlock=os.environ.get("AURA_MLOCK", "1") != "0",
                 draft_model=_draft_model(),  # spec decoding (AURA_SPEC=0 -> None)
                 verbose=False,
             )
@@ -934,6 +930,14 @@ def _n_ctx_cible(llm=None) -> int:
                 n = None
         if isinstance(n, int) and n > 0:
             return n
+    # Pas de LLM in-process (chemin SERVEUR) : la fenetre est celle du
+    # llama-server, qui peut depasser le defaut de 4096 (profil_materiel).
+    try:
+        from . import serveur_lora
+        if serveur_lora._actifs():
+            return int(serveur_lora._n_ctx())
+    except Exception:  # noqa: BLE001
+        pass
     return _N_CTX_DEFAUT
 
 
@@ -1063,6 +1067,14 @@ def generer(question: str, contexte_web: str = "", formule: str = "",
     # par l'orchestrateur (cf. poser_echeance).
     if deadline is None:
         deadline = echeance_ambiant()
+    # SKILLS : consignes CIBLÉES ajoutées au prompt standard uniquement. Un
+    # prompt d'expert (PoT, logique, code) porte ses propres instructions : le
+    # compléter avec une autre consigne le contredirait. Un 1B recopie les
+    # consignes longues — chaque skill reste court et le total est borné.
+    base_systeme = systeme or _SYSTEME
+    if systeme is None or systeme == _SYSTEME:
+        base_systeme = _skills.completer(base_systeme, question,
+                                         bool(contexte_web))
     effacer_reflexion()
     raisonner = bool(think if think is not None else
                      os.environ.get("AURA_THINK") == "1")
@@ -1108,7 +1120,7 @@ def generer(question: str, contexte_web: str = "", formule: str = "",
             if serveur_lora._actif is None:
                 serveur_lora.activer(categorie)
             messages_srv = [{"role": "system",
-                             "content": systeme or _SYSTEME}]
+                             "content": base_systeme}]
             tours_historique = _tours_fenetre(historique)
             if raisonner:
                 tours_historique = tours_historique[-2:]
@@ -1203,7 +1215,7 @@ def generer(question: str, contexte_web: str = "", formule: str = "",
         return ("[RontoGPT] Le cerveau Llama n'est pas disponible. "
                 f"Details : {e}")
 
-    messages = [{"role": "system", "content": systeme or _SYSTEME}]
+    messages = [{"role": "system", "content": base_systeme}]
     tours_historique = _tours_fenetre(historique)
     if raisonner:
         tours_historique = tours_historique[-2:]

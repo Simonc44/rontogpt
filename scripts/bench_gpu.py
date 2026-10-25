@@ -17,8 +17,12 @@ import time
 import urllib.request
 from pathlib import Path
 
+from aura.llama_cerveau import chemin_gguf
+
 _RACINE = Path(__file__).resolve().parent.parent
-_GGUF = _RACINE / "modeles" / "Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+# Cerveau par defaut du projet (le GGUF Llama 3.2 a ete supprime : ne pas
+# coder un nom de fichier ici, `chemin_gguf()` est la source unique).
+_GGUF = Path(chemin_gguf())
 
 # sortie longue NON bornable : le modele ne peut pas finir avant le
 # budget, donc le decode se mesure sur les 160 tokens demandes

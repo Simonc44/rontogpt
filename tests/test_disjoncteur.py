@@ -127,7 +127,7 @@ class TestGenerationAntiBoucle:
         normal = ech.pour_inprocess(ech.NORMAL)
         relance = ech.pour_inprocess(ech.RELANCE)
         assert relance["repeat_penalty"] > normal["repeat_penalty"]
-        assert relance["temperature"] > normal["temperature"]
+        assert normal["temperature"] == relance["temperature"] == 1.0
 
 
 # ── routage meta-IA (l'anti-mode-dissertation) ─────────────────────────
@@ -146,6 +146,39 @@ class TestRoutageMetaIA:
             "l'homme moderne ?") is False
         assert orch._est_meta_ia(
             "Explique comment la photosynthese fonctionne en detail") is False
+
+    def test_la_capacite_ne_vole_pas_une_dissertation(self):
+        """« puissance » NU n'est pas une question sur le MODELE.
+
+        Defaut mesure (scripts/bench_qualite.py, riche-puissance) : la
+        reponse-constante d'identite interceptait une dissertation sur la
+        puissance de la technologie, alors que `_est_meta_ia` la classe
+        correctement comme NON meta. La possesion (« ta puissance ») reste
+        reconnue.
+        """
+        from aura.regles_reponse import _RE_CAPACITE_MODELE
+
+        dissertation = ("la puissance de la technologie est-elle une menace "
+                        "pour l'homme moderne ? redige une dissertation "
+                        "structuree")
+        assert _RE_CAPACITE_MODELE.search(dissertation) is None
+        assert _RE_CAPACITE_MODELE.search("quelle est ta puissance ?")
+
+    def test_comparaison_directe_avec_un_assistant(self):
+        """« Plus fort que ChatGPT ? » est une question sur le MODELE.
+
+        Sans ce motif, elle partait au 1B : 7 a 34 s de digression, echec du
+        banc meta-capacite (cible < 5 s). Elle doit au contraire recevoir la
+        reponse-constante.
+        """
+        from aura.regles_reponse import _RE_CAPACITE_MODELE
+
+        for question in ("Tu es plus fort que ChatGPT ?",
+                         "Es-tu meilleur que GPT-4 ?",
+                         "Tu es aussi bon que Claude ?"):
+            assert _RE_CAPACITE_MODELE.search(question), question
+        assert _RE_CAPACITE_MODELE.search(
+            "Explique ce qu'est ChatGPT") is None
 
     def test_question_meta_longue_garde_un_budget_court(self):
         # C'ETAIT LE BUG : >= 9 mots -> redaction longue -> 153 s.

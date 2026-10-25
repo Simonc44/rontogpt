@@ -245,7 +245,7 @@ class node_llm,node_adapters,node_loraserver,node_kernel,node_web,node_llama,nod
 | **PoT-code** (`potcode.py`) | génération de code cassé | le 1B écrit une fonction + des asserts, une sandbox (builtins restreints + budget d'instructions via `settrace`) exécute tout ; un assert raté = le code n'est jamais livré |
 | **Agents cognitifs** (`agents.py`) | fragilité du petit modèle | agents légers qui orchestrent le 1B : planificateur (les tâches complexes sont découpées en 2-3 étapes avant rédaction), compresseur RAG (seules les 3 phrases web utiles atteignent le LLM), rédacteur (retrait des tics de langage du 1B), debugger récursif (le code raté est relancé avec l'erreur exacte de la sandbox, max 3), masqueur de personnalité (prompt système adapté à la catégorie routée). Le mimétisme few-shot et la double passe ont été **retirés avec le mode riche** — le raisonnement du modèle fait mieux le travail, et le flux le montre |
 | **Hot-swap LoRA** (`adaptateurs.py`) | un cerveau, une spécialité | permutation dynamique d'adaptateurs via la C-API llama.cpp : le GGUF de base est chargé une fois, les adaptateurs par catégorie (~10-40 Mo, entraînés sur Colab avec PEFT) se montent/démontent sans recharger. Registre LRU en mémoire (défaut 1 adaptateur = empreinte quasi nulle). `AURA_ADAPTATEURS=1` pour activer |
-| **Multi-LoRA servi** (`serveur_lora.py`) | un cerveau, plusieurs spécialités simultanées | le llama-server officiel (build CPU, auto-démarré par RontoGPT) monte le cerveau Q4_K_M + les 4 adaptateurs de catégorie au boot ; les probabilités du routeur deviennent des poids simultanés `{"math": 0.7, "web": 0.3}` en un appel HTTP — sans recharger, hot-swap en ~ms. Repli in-process jamais bloquant |
+| **Multi-LoRA servi** (`serveur_lora.py`) | un cerveau, plusieurs spécialités simultanées | le llama-server officiel (build CPU, auto-démarré par RontoGPT) monte le cerveau Q4_K_M + les 4 adaptateurs de catégorie au boot ; les **deux meilleures** probabilités du routeur deviennent des poids simultanés renormalisés `{"math": 0.62, "web": 0.38}` en un appel HTTP — sans recharger, hot-swap en ~ms. (Les échelles LoRA s'appliquent par requête ; un routage par token exigerait un vrai modèle MoE.) Repli in-process jamais bloquant |
 | **Dynamic Compute** | une seule vitesse pour tout | une question qui demande du raisonnement reçoit un budget de tokens ×2 (plancher 400) pour son bloc ` thinking` ; les simples restent instantanées. Ce raisonnement n'est **pas** retiré du flux — il est affiché, dans sa propre phase (`PHASE_PENSEE`) |
 | **Mémoire à long terme** (`graphe_faits.py`) | savoir à poids égal | chaque triplet porte une force ; chaque usage **vérifié** la renforce, la recherche pondère force × récence — le savoir organise lui-même son importance, zéro réentraînement |
 | **Self-play** (`selfplay.py`) | s'améliorer demande un utilisateur | un générateur de défis fabrique énigmes logiques et exercices depuis le graphe de faits, un juge déterministe valide, les succès renforcent le graphe et rejoignent le jeu d'entraînement — boucle fermée façon AlphaGo. `aura --selfplay 20` |
@@ -257,6 +257,12 @@ l'environnement avant de lancer RontoGPT. La recherche Google envoie alors la
 question à Gemini ; selon l'offre et l'usage, l'API peut être payante. Sans
 cette variable, RontoGPT garde son chemin DDGS habituel. Le modèle est configurable
 avec `AURA_GEMINI_MODEL` (défaut `gemini-3.8-flash`).
+
+Pour les dissertations et les rédactions longues, `AURA_GEMINI_REDACTION=1`
+(ou `redaction_gemini = true` dans `[qualite]`) confie directement le texte à
+Gemini : une seule requête avec un prompt de dissertation, au lieu des trois
+blocs locaux. Par défaut la rédaction reste locale ; `AURA_CLOUD=non` interdit
+tout envoi, et un échec de l'API replie sur les trois blocs locaux.
 
 ### La pensée, en clair
 
@@ -290,6 +296,30 @@ coûte exactement une relance, correction injectée dans le prompt.
 contredisait le raisonnement du modèle, et c'est lui qui rendait les réponses
 longues lentes. Coût de la version actuelle : la pensée défile aussi, donc une
 longue réflexion est du temps *visible* plutôt que caché.
+
+## 📁 Vos documents, sans le cloud
+
+RontoGPT peut répondre à partir de **vos** fichiers (PDF, Markdown, texte),
+indexés localement, sans aucun envoi réseau. Dans la fenêtre graphique, le
+panneau de gauche suffit : **« + Ajouter des fichiers »**, la liste des
+documents indexés, et **« Nouvelle conversation »** pour repartir à zéro.
+
+En ligne de commande :
+
+```bash
+python -m aura.documents add rapport.pdf notes.md
+python -m aura.documents add-dossier ~/Documents/mes-notes
+python -m aura.documents list
+python -m aura.documents search "que dit le rapport sur le budget ?"
+python -m aura.documents rm rapport.pdf
+```
+
+L'index vit dans `.cache_docs/` (jamais versionné). Une réponse issue d'un
+document porte la ligne `Sources : nom-du-fichier.md`. Sur une question
+factuelle courte avec un extrait très proche, le passage est **cité tel quel**
+(zéro génération, zéro invention) ; sinon le 1B synthétise à partir des
+extraits. Sans MiniLM, la recherche retombe sur un recouvrement lexical —
+jamais sur une erreur.
 
 ## 🎓 Entraîner son IA
 

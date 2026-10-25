@@ -8,7 +8,7 @@ parametres SEPAREMENT, et ils avaient deja diverge :
 
   * le serveur n'envoyait AUCUNE penalite alors que l'in-process envoyait
     repeat_penalty 1,1 -> le chemin ACTIF etait le moins protege ;
-  * le disjoncteur anti-boucle (relance en temperature 0,85 / penalite 1,25)
+  * le disjoncteur anti-boucle (relance en penalite 1,25)
     n'existait QUE cote in-process.
 
 Un parametre ecrit deux fois finit toujours par diverger : il n'est donc
@@ -33,15 +33,12 @@ class Profil:
     dry: bool = False
 
 
-#: Generation normale : temperature faible -> ancrage sur les faits.
-#: Cerveau par defaut = Gemma-3-1B « thinking » : sa fiche modele demande une
-#: repetition penalty de 1,05 a 1,1 et previent que la PENSEE peut boucler
-#: au-dela de 0,7 de temperature. 1,1 est la borne haute de la fourchette
-#: conseillee — on la prend parce que le disjoncteur d'RontoGPT relance a 1,25
-#: quand une boucle est detectee de toute facon (le filet reste en place).
-NORMAL = Profil(0.4, 0.9, 0.05, 1.1, dry=True)
-#: Relance apres detection d'une boucle : plus de variance + penalite forte.
-RELANCE = Profil(0.85, 0.9, 0.05, 1.25)
+#: Temperature FIXE a 1.0 sur les DEUX profils : elle ne varie plus par usage
+#: ni apres une boucle. Seule la penalite de repetition change (la relance
+#: reste plus punitive que la generation normale).
+NORMAL = Profil(1.0, 0.9, 0.05, 1.1, dry=True)
+#: Relance apres detection d'une boucle : meme temperature, penalite forte.
+RELANCE = Profil(1.0, 0.9, 0.05, 1.25)
 
 #: Balises d'arret GENERIQUES (toujours valables) : la fin de tour de la
 #: famille chargee est ajoutee par `stops()` — cf. llama_cerveau

@@ -157,7 +157,7 @@ class TestMasqueur:
 
     def test_composite_garde_la_base(self):
         p = agents.composer_personnalite({"web"}, "quel temps fait-il")
-        assert p and p.startswith("Tu es RontoGPT")     # base conservee
+        assert p and p.startswith("You are a helpful assistant.")
         assert "faits" in p.lower()                  # masque ajoute
 
     def test_logique_garde_le_cot_natif(self):
@@ -188,7 +188,7 @@ class TestIntegrationOrchestrateur:
         assert r == "ok"
         assert len(capturé["ctx"].split(". ")) <= 4   # compresse
 
-    def test_personnalite_passee_au_cerveau(self, monkeypatch):
+    def test_prompt_systeme_fixe_envoye_au_cerveau(self, monkeypatch):
         from aura import memoire_web
         analyse = {"experts": {"web"}, "scores": {"web": 0.9},
                    "methodes": ["t"]}
@@ -201,7 +201,7 @@ class TestIntegrationOrchestrateur:
                             lambda *a, systeme=None, **k:
                             perso.update(s=systeme) or "ok")
         ia.executer("quel est le prix du petrole")
-        assert perso["s"] and "journaliste" in perso["s"]
+        assert perso["s"] == "You are a helpful assistant."
 
     def test_pipeline_general_intact(self, monkeypatch):
         """Chemin simple sans expert : comportement d'avant (pas de plan)."""

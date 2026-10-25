@@ -21,8 +21,15 @@ import subprocess
 import sys
 import time
 import urllib.request
+from pathlib import Path
 
 LOG = logging.getLogger("aura.superviseur")
+
+_RACINE = Path(__file__).resolve().parent.parent
+
+#: Journal du demon (le processus detache n'a pas de console : sans fichier,
+#: un demarrage rate serait invisible).
+JOURNAL_DEMON = _RACINE / "logs" / "aura-demon.log"
 
 PORT = int(os.environ.get("AURA_API_PORT", "8760"))
 URL_SANTE = f"http://127.0.0.1:{PORT}/v1/health"
@@ -101,6 +108,49 @@ def _attendre_interruption() -> None:
     """
     while True:
         time.sleep(3600)
+
+
+def commander_demon() -> list[str]:
+    """Ligne de commande du demon — isolee pour etre testable sans lancer."""
+    return [sys.executable, "-m", "aura", "--superviser", "--api"]
+
+
+def lancer_demon() -> int:
+    """Amene l'API supervisee en ARRIERE-PLAN, puis rend la main.
+
+    Le processus enfant est DETACHE : fermer le terminal ne l'arrete pas, et
+    il garde le cerveau charge — donc le premier token d'un client ulterieur
+    ne repaie pas le boot. C'est le sens utile de « mode demon » ici ;
+    `mlock` (AURA_MLOCK) empeche seulement la pagination des poids, il ne
+    raccourcit pas le chargement a froid.
+
+    Renvoie 0 quand l'API repond, 1 si elle ne repond pas (le journal est
+    alors le seul endroit ou lire pourquoi).
+    """
+    if sante_ok():
+        print(f"[demon] une API repond deja sur {URL_SANTE} : rien a lancer.")
+        return 0
+    JOURNAL_DEMON.parent.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ, "AURA_API_PORT": str(PORT)}
+    options: dict = {}
+    if os.name == "nt":
+        options["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    else:
+        options["start_new_session"] = True
+    with open(JOURNAL_DEMON, "ab", buffering=0) as journal:
+        proc = subprocess.Popen(commander_demon(), cwd=str(_RACINE), env=env,
+                                stdout=journal, stderr=journal, **options)
+    print(f"[demon] lance en arriere-plan (pid {proc.pid}), journal : "
+          f"{JOURNAL_DEMON}")
+    if not attendre_sante():
+        print("[demon] l'API ne repond pas : lire le journal ci-dessus.",
+              file=sys.stderr)
+        return 1
+    print(f"[demon] API prete sur 127.0.0.1:{PORT}")
+    return 0
 
 
 def lancer(interface: bool = True) -> int:

@@ -10,7 +10,8 @@ import pytest
 
 from aura import aiguilleur, gemini
 
-_VARIABLES = ("AURA_GEMINI", "AURA_GEMINI_HISTORIQUE", "AURA_AIGUILLEUR_REGLES",
+_VARIABLES = ("AURA_CLOUD", "AURA_GEMINI", "AURA_GEMINI_HISTORIQUE",
+              "AURA_AIGUILLEUR_REGLES",
               "AURA_AIGUILLEUR_DOMAINES", "AURA_GEMINI_REGLES",
               "AURA_GEMINI_DOMAINES")
 
@@ -36,7 +37,21 @@ def _isole(monkeypatch, tmp_path):
 
 @pytest.fixture
 def avec_cle(monkeypatch):
+    """Une cle ET l'envoi automatique (AURA_CLOUD=oui).
+
+    Les tests d'integration ci-dessous verifient la MECANIQUE d'escalade. Le
+    defaut du produit est `demander` (rien ne part sans clic) : il a ses
+    propres tests plus bas (`fixture sans_envoi_auto`).
+    """
     monkeypatch.setenv("GOOGLE_API_KEY", "fausse-cle-test")
+    monkeypatch.setenv("AURA_CLOUD", "oui")
+
+
+@pytest.fixture
+def sans_envoi_auto(monkeypatch):
+    """Une cle, et le mode PAR DEFAUT du produit (AURA_CLOUD absent)."""
+    monkeypatch.setenv("GOOGLE_API_KEY", "fausse-cle-test")
+    monkeypatch.delenv("AURA_CLOUD", raising=False)
 
 
 def _res(reponse, cerveau="gemma3-1b", **extra):

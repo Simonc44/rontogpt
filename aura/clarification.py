@@ -283,6 +283,22 @@ _RE_LONGUEUR = re.compile(
     r"chiffre\w*|aleatoire|solide|robuste|simple|memorisable|"
     r"phrase)\b")
 
+# Intentions formulees sans objet concret : elles ne commencent pas toujours
+# par un verbe d'action ("je voudrais faire un truc", "j'ai besoin d'aide").
+# On ne declenche que sur ces formes explicites pour eviter les faux positifs.
+_RE_INTENTION_VAGUE = re.compile(
+    r"^(?:je\s+(?:veux|voudrais|souhaite|souhaiterais|dois)\s+"
+    r"(?:faire|creer|construire|preparer|organiser|ameliorer|corriger|"
+    r"comprendre|resoudre|ecrire|rediger|traduire|choisir|apprendre)"
+    r"|j\s*'\s*aimerais\s+(?:faire|creer|construire|preparer|organiser|"
+    r"ameliorer|corriger|comprendre|resoudre|ecrire|rediger|traduire|"
+    r"choisir|apprendre))"
+    r"(?:\s+(?:quelque\s+chose|un\s+truc|un\s+peu|des\s+choses))?"
+    r"\s*[.!?]*$")
+_RE_BESOIN_AIDE_VAGUE = re.compile(
+    r"^(?:j\s*'\s*ai\s+besoin\s+d\s*'\s*aide|"
+    r"je\s+(?:suis\s+perdu|ne\s+sais\s+pas\s+quoi\s+faire))\s*[.!?]*$")
+
 
 @dataclass(frozen=True)
 class Besoin:
@@ -307,7 +323,7 @@ class Besoin:
 
 
 _RELANCE: dict[str, str] = {
-    "objet": "Sur quoi porte exactement ta demande ?",
+    "objet": "Quel résultat veux-tu obtenir exactement ? Donne-moi le sujet ou la tâche précise.",
     "sujet": "Quel sujet veux-tu que je traite ?",
     "contraintes": "Quelles contraintes veux-tu (longueur, ton, public) ?",
     "reference": "De quoi parles-tu exactement ? Je n'ai pas d'échange "
@@ -336,6 +352,10 @@ def detecter(question: str, a_contexte: bool = False) -> Besoin | None:
     t = _depouiller(_norm(question))
     if not t:
         return None
+
+    if _RE_INTENTION_VAGUE.match(t) or _RE_BESOIN_AIDE_VAGUE.match(t):
+        return _besoin(question, "objectif-absent", ("objet",),
+                       "intention sans objet ni resultat attendu")
 
     # 1. CONVERSION INCOMPLETE : « convertis 100 » — sans unite cible, la
     #    reponse est impossible (100 quoi, vers quoi ?). Teste EN PREMIER :
@@ -441,17 +461,15 @@ def fusionner(origine: str, precision: str) -> str:
 
 
 class Suivi:
-    """Etat « une question de relance attend sa reponse » — UN SEUL tour.
+    """Suit une clarification avec une limite de trois relances successives."""
 
-    La porte n'est pas un questionnaire : des que l'utilisateur a repondu,
-    la precision est recollee et le pipeline repart sans pouvoir reposer de
-    question (aucun ping-pong possible).
-    """
+    MAX_RELANCES = 3
 
     def __init__(self) -> None:
         self._origine = ""
         self._famille = ""
         self._questions: tuple[str, ...] = ()
+        self._nombre_relances = 0
 
     def en_attente(self) -> bool:
         return bool(self._origine)
@@ -460,6 +478,10 @@ class Suivi:
         self._origine = question
         self._famille = besoin.famille
         self._questions = besoin.questions
+        self._nombre_relances += 1
+
+    def peut_relancer(self) -> bool:
+        return self._nombre_relances < self.MAX_RELANCES
 
     def consommer(self, precision: str) -> str | None:
         """Fusionne la precision et remet l'etat a zero.
@@ -469,7 +491,9 @@ class Suivi:
         if not self._origine:
             return None
         fusion = fusionner(self._origine, precision)
-        self.annuler()
+        self._origine = ""
+        self._famille = ""
+        self._questions = ()
         return fusion
 
     def annuler(self) -> None:
@@ -477,6 +501,7 @@ class Suivi:
         self._origine = ""
         self._famille = ""
         self._questions = ()
+        self._nombre_relances = 0
 
     def etat(self) -> dict:
         """Trace exploitable (journal, tests, API)."""
