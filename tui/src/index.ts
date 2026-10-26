@@ -22,8 +22,9 @@
  *   - tout le reste est caché : `/help` liste les commandes, `Échap`
  *     interrompt, `/commande` ouvre les actions secondaires.
  *   (Le badge de preuve et le « Demander à Gemini » du backend ne sont pas
- *   encore branchés dans cet écran : `provenance` et `repli_propose` arrivent
- *   déjà dans l'événement `final`.)
+ *   affichés dans cet écran : `provenance` et `repli_propose` arrivent déjà
+ *   dans l'événement `final`, mais le TUI ne garde la ligne de méta que pour
+ *   les échecs et les interruptions.)
  */
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -496,12 +497,21 @@ async function envoyer(question: string): Promise<string> {
     puce.fg = TH.alerte;
   }, 250);
 
+  // Une seule fois : `final` ET le `finally` appellent cette fonction.
+  let attenteFinie = false;
   const finirAttente = (): void => {
+    if (attenteFinie) return;
+    attenteFinie = true;
     clearInterval(tic);
     attente.content = "";
     attente.visible = false;
+    // `requestRender` explicite : sans lui, la ligne d'attente déjà peinte
+    // pouvait rester à l'écran (« Réflexion (0 s …) » juste au-dessus de la
+    // réponse) quand autre chose avait repeint par-dessus. Détruire le noeud
+    // marche aussi mais fait perdre la puce de la réponse (mesuré).
     puce.content = "•";
     puce.fg = TH.discret;
+    renderer.requestRender();
   };
   const poser = (contenu: string, options: OptionsPeinture = {}): void => {
     corps.peindre(contenu, options);        // riche par défaut : cadres + sources
@@ -537,11 +547,11 @@ async function envoyer(question: string): Promise<string> {
         }
         poser(affiche, { couleur });
         if (modePlan && e.ok) enregistrerPlan(affiche);
-        if (e.provenance) {
-          const preuve = e.provenance.verifie ? "verified" : "not verified";
-          poserMeta(habillerMeta(`${e.provenance.badge} · ${preuve} · ${e.provenance.detail}`),
-                    e.provenance.verifie ? TH.ok : TH.alerte);
-        }
+        // PAS de bandeau de provenance sous la réponse : « Base vérifiée ·
+        // verified · base de faits locale relue » est une méta que le backend
+        // fournit (`e.provenance`) mais qui n'apprend rien sous une réponse
+        // ordinaire, et qui coupait le fil par un trait pleine largeur à
+        // chaque tour. La méta reste réservée aux ÉCHECS et interruptions.
         if (e.contexte?.sature) note(phraseContexte(e.contexte), TH.alerte);
         if (!e.ok && e.erreur) note(`Le cerveau signale : ${e.erreur}`, TH.erreur);
         direLocalement(affiche);

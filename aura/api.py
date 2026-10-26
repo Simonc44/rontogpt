@@ -10,6 +10,10 @@ Demarrage :
     python -m aura.api --no-preload  # cerveau charge a la 1re question
     python -m aura.api --smoke       # auto-test puis exit 0 (CI / verification)
 
+Journaux : ils vont dans `aura.log` (ou `AURA_JOURNAL`), JAMAIS sur le
+terminal — celui-ci appartient au TUI, et une ligne de journal ecrite
+pendant qu'il dessine se pose par-dessus la conversation.
+
 Routes :
     GET  /v1/health  -> {"status": "ok", "version": "..."}
     GET  /v1/status  -> etat du coeur (prete / chargement / erreur / serveur / gpu)
@@ -60,6 +64,7 @@ import argparse
 import hmac
 import ipaddress
 import json
+import logging
 import os
 import sys
 import threading
@@ -67,6 +72,7 @@ import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from . import config as _config
@@ -79,7 +85,45 @@ if TYPE_CHECKING:
 
 _config.appliquer()
 
+LOG = logging.getLogger("aura.api")
+
 _LOG_COURT = 60_000          # corps de requete acceptes (60 Ko)
+
+
+def _configurer_journal() -> "Path | None":
+    """Les journaux de l'API vont dans un FICHIER, jamais sur le terminal.
+
+    L'API tourne dans le meme terminal que l'interface (le lanceur la demarre
+    dans cette console, et on peut aussi la lancer a la main puis ouvrir le
+    TUI) : une ligne ecrite sur stderr pendant que le TUI dessine se pose
+    PAR-DESSUS l'ecran et laisse des lignes fantomes au milieu de la
+    conversation — constate avec les avertissements d'integrite des caches du
+    routeur, qui repeignaient le bas de l'ecran a chaque chargement. Tout part
+    donc dans `aura.log` (ignore par git), dont le chemin est annonce au
+    demarrage ; `AURA_JOURNAL` change la destination.
+    """
+    from logging.handlers import RotatingFileHandler
+
+    chemin = Path(os.environ.get("AURA_JOURNAL")
+                  or Path(__file__).resolve().parent.parent / "aura.log")
+    racine = logging.getLogger()
+    if any(isinstance(h, RotatingFileHandler) for h in racine.handlers):
+        return chemin
+    try:
+        handler: logging.Handler = RotatingFileHandler(
+            chemin, maxBytes=2 << 20, backupCount=2, encoding="utf-8")
+    except OSError as e:
+        # Disque en lecture seule, chemin invalide : pas de journal — mais
+        # surtout PAS de sortie terminal. Un `NullHandler` sur la racine
+        # coupe aussi le `lastResort` qui ecrivait sur stderr.
+        racine.addHandler(logging.NullHandler())
+        print(f"[api] journal indisponible ({e}) — sortie muette", file=sys.stderr)
+        return None
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    racine.setLevel(logging.INFO)
+    racine.addHandler(handler)
+    return chemin
 
 
 def build() -> str:
@@ -914,6 +958,8 @@ def main(argv=None) -> int:
                     help="auto-test des routes puis exit 0")
     args = ap.parse_args(argv)
 
+    journal = _configurer_journal()
+
     # REFUS AVANT D'ECOUTER : une API ouverte sans cle n'est pas un
     # avertissement dans un journal que personne ne lit, c'est un acces
     # complet au cerveau et aux fichiers locaux.
@@ -929,6 +975,8 @@ def main(argv=None) -> int:
     fil.start()
     print(f"[api] http://{args.host}:{args.port}/v1/health "
           f"(profil {os.environ.get('AURA_PROFIL', 'equilibre')})")
+    if journal is not None:
+        print(f"[api] journal : {journal}")
 
     try:
         if args.smoke:
@@ -943,11 +991,13 @@ def main(argv=None) -> int:
             pass
         if not args.no_preload:
             threading.Thread(target=etat.charger, daemon=True).start()
-            print("[api] chargement du cerveau en tache de fond...")
+            # LOG et pas print : cette ligne arrive PENDANT que le TUI
+            # dessine, un print se poserait par-dessus la conversation.
+            LOG.info("[api] chargement du cerveau en tache de fond...")
         while True:
             time.sleep(3600)
     except KeyboardInterrupt:
-        print("\n[api] arret")
+        LOG.info("[api] arret")
     finally:
         serveur.shutdown()
     return 0
