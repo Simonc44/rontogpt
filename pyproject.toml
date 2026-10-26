@@ -79,6 +79,24 @@ url = "https://abetlen.github.io/llama-cpp-python/whl/cpu/"
 [tool.uv.sources]
 llama-cpp-python = { index = "abetlen-cpu" }
 
+[tool.uv]
+# CVE-2026-114603 : `TraceState.from_header` (opentelemetry-api) a un cout
+# CPU quadratique sur un en-tete W3C `tracestate` malforme, et la version
+# corrigee est 1.45.1. `google-adk` 2.13.0 — la DERNIERE publiee — declare
+# `opentelemetry-api<=1.44`, donc le verrou restait bloque sur 1.42.1 et
+# l'avis etait ignore dans l'audit. On force ici la version corrigee.
+#
+# Ce qui a ete verifie, et qui manquait la derniere fois : la chaine ADK
+# tourne pour de vrai sous 1.45.1 (`tests/test_agents_adk.py` monte un
+# SequentialAgent dans un InMemoryRunner, modele local simule). Le jour ou
+# `google-adk` elargit son pin, retirer ce bloc : il ne sert qu'a ca.
+# Les deux paquets doivent bouger ensemble, `opentelemetry-sdk` exige
+# `opentelemetry-api==<sa propre version>`.
+override-dependencies = [
+    "opentelemetry-api==1.45.1",
+    "opentelemetry-sdk==1.45.1",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -165,12 +183,6 @@ module = [
     "sklearn.*", "joblib.*", "scipy.*", "gplearn.*",
     "ddgs.*", "duckduckgo_search.*", "llama_cpp.*",
     "chiffrement", "signature", "kernel",
-    # `pywebview` n'est plus une dependance declaree, mais `gui_web.py`
-    # l'importe sous `TYPE_CHECKING` (et au runtime dans `main`) : sans ce
-    # bloc, la CI Linux — ou le module est absent — refusait de typer le
-    # fichier. L'import reste OPTIONNEL : l'absence de pywebview ne doit
-    # jamais casser `aura` lui-meme.
-    "webview",
 ]
 ignore_missing_imports = true
 

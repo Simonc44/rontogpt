@@ -557,6 +557,13 @@ def _charger():
             LOG.debug("[profil] preflight memoire ignore : %s", e)
 
         from llama_cpp import Llama
+        # PORTEES devant le cache disque de llama.cpp : `set_cache` avec un
+        # `LlamaDiskCache` doit ouvrir quatre portails (aura/garde_cache_disque.py,
+        # avis PYSEC-2026-2447 — pickle relu depuis un dossier ou un attaquant
+        # peut ecrire). aura ne s'en sert pas ; le garde garantit que ca reste
+        # vrai, et refuse bruyamment sinon.
+        from . import garde_cache_disque
+        garde_cache_disque.installer(Llama)
         reg = _reglages_materiel()
         couches_gpu = _couches_gpu()
         t0 = time.time()

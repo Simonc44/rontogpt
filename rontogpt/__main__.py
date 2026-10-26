@@ -8,8 +8,7 @@ Particularite de ce module : il s'importe AVANT `aura` (dont le paquet
 `__init__` tire gplearn / llama_cpp). C'est donc la seule porte ou l'on peut
 encore choisir son interpreteur : lance avec le Python global (« python »
 tout court), le projet recharge ses dependances depuis `.venv` au lieu
-d'echouer sur « No module named 'gplearn' ». Meme convention que
-`aura/gui_web.py`.
+d'echouer sur « No module named 'gplearn' ».
 """
 from __future__ import annotations
 

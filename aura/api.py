@@ -44,14 +44,24 @@ raison (`famille`, `manque`, `questions`).
     POST /v1/cloud   {cle, actif, mode, modele, redaction} -> applique les
                      reglages Gemini au processus et rend le nouvel etat
 
-Securite : bind 127.0.0.1 par defaut (jamais expose sur le reseau). Si
-AURA_API_CLE est posee, chaque appel doit fournir l'entete X-RontoGPT-Cle.
+Securite :
+- bind 127.0.0.1 par defaut ; ecouter ailleurs est REFUSE au demarrage sans
+  `AURA_API_CLE` d'au moins 16 caracteres ;
+- si `AURA_API_CLE` est posee, chaque appel doit fournir `X-RontoGPT-Cle`
+  (comparaison en temps constant) ;
+- les routes qui MODIFIENT un etat durable (`/v1/cloud`, `/v1/learn`,
+  `/v1/documents`, `/v1/api/*`) ne repondent qu'a 127.0.0.1, meme avec la
+  bonne cle ;
+- `/v1/config` masque la valeur des variables qui portent un secret.
 """
 from __future__ import annotations
 
 import argparse
+import hmac
+import ipaddress
 import json
 import os
+import sys
 import threading
 import time
 import urllib.error
@@ -195,14 +205,84 @@ class _Etat:
             return self.ia
 
 
+#: Longueur minimale acceptee pour AURA_API_CLE quand l'API quitte le
+#: loopback. En dessous, une cle se devine ou se force en quelques milliers
+#: d'essais : « une cle » n'est pas une protection, sa longueur en est une.
+_CLE_MINIMUM = 16
+
+#: Routes qui MODIFIENT un etat durable : cle Gemini ecrite dans `.env`, faits
+#: ajoutes a la base, fichiers indexes, atelier OpenAI demarre/arrete. Meme
+#: avec une cle valide, elles ne repondent QUE depuis la machine : une cle
+#: peut fuiter (capture d'ecran, journal, `.env` copie), pas l'adresse source
+#: de la requete.
+_ROUTES_LOCALES = frozenset({
+    "/v1/cloud", "/v1/learn", "/v1/documents",
+    "/v1/api", "/v1/api/disable", "/v1/api/deploy",
+})
+
+
+def _est_local(adresse: str) -> bool:
+    """L'adresse designe-t-elle la machine elle-meme ? (127.0.0.1, ::1, localhost)"""
+    if not adresse:
+        return False
+    if adresse == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(adresse).is_loopback
+    except ValueError:
+        return False
+
+
+def _verifier_exposition(host: str, cle: str | None = None) -> str | None:
+    """Message d'erreur si ecouter sur `host` exposerait l'API sans cle.
+
+    `None` = l'ecoute est sure. Une API sur 0.0.0.0 SANS cle donne a n'importe
+    qui sur le reseau le cerveau, la memoire, les documents locaux et la
+    configuration : ce n'est pas un avertissement, c'est un refus.
+    """
+    if _est_local(host):
+        return None
+    effective = (cle if cle is not None
+                 else os.environ.get("AURA_API_CLE", "")).strip()
+    if len(effective) < _CLE_MINIMUM:
+        return (f"ecoute sur {host} sans AURA_API_CLE d'au moins "
+                f"{_CLE_MINIMUM} caracteres : n'importe qui sur le reseau "
+                "aurait le cerveau, la memoire, les documents et la cle "
+                "Gemini. Poser la cle, ou revenir a 127.0.0.1.")
+    return None
+
+
+def _route_locale_seulement(chemin: str) -> bool:
+    """La route (sans sa query) est-elle reservee a la machine ?"""
+    return chemin.split("?", 1)[0] in _ROUTES_LOCALES
+
+
 def _verifier_cle(entetes) -> bool:
-    attendue = os.environ.get("AURA_API_CLE")
-    return (not attendue or entetes.get("X-RontoGPT-Cle") == attendue
-            or entetes.get("X-Aura-Cle") == attendue)
+    attendue = os.environ.get("AURA_API_CLE", "")
+    if not attendue:
+        return True          # pas de cle configuree : le loopback est la garde
+    fournie = str(entetes.get("X-RontoGPT-Cle")
+                  or entetes.get("X-Aura-Cle") or "")
+    # Comparaison en TEMPS CONSTANT : `==` sort au premier caractere faux, et
+    # le temps de reponse dit alors combien de caracteres sont justes.
+    return hmac.compare_digest(fournie, attendue)
 
 
 class _Handler(BaseHTTPRequestHandler):
     etat: _Etat = _Etat()          # remplace par _creer_handler()
+
+    def _acces_refuse(self) -> bool:
+        """Repond 401/403 et rend True si la requete ne va pas plus loin."""
+        if not _verifier_cle(self.headers):
+            self._json({"ok": False, "erreur": "cle invalide"}, 401)
+            return True
+        if (_route_locale_seulement(self.path)
+                and not _est_local(self.client_address[0])):
+            self._json({"ok": False,
+                        "erreur": "route locale uniquement : elle modifie "
+                                  "l'etat et ne repond qu'a 127.0.0.1"}, 403)
+            return True
+        return False
 
     # -- utilitaires --------------------------------------------------
     def log_message(self, format, *args):        # journalisation calmee
@@ -227,8 +307,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- GET ----------------------------------------------------------
     def do_GET(self):                                # noqa: N802 (stdlib)
-        if not _verifier_cle(self.headers):
-            return self._json({"ok": False, "erreur": "cle invalide"}, 401)
+        if self._acces_refuse():
+            return
         if self.path == "/v1/api":
             return self._api_status()
         if self.path == "/v1/api/disable":
@@ -254,8 +334,10 @@ class _Handler(BaseHTTPRequestHandler):
                 "budget_s": os.environ.get("AURA_BUDGET_S", "45"),
             })
         if self.path == "/v1/config":
+            # MASQUE : cette table part par HTTP, et `efficace()` sans argument
+            # contenait `AURA_GEMINI_API_KEY` et `AURA_API_CLE` en clair.
             return self._json({"version": _config.version(),
-                               "environnement": _config.efficace()})
+                               "environnement": _config.efficace(masquer=True)})
         if self.path == "/v1/cloud":
             from . import gemini
             return self._json(gemini.etat())
@@ -276,8 +358,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- POST ---------------------------------------------------------
     def do_POST(self):                               # noqa: N802 (stdlib)
-        if not _verifier_cle(self.headers):
-            return self._json({"ok": False, "erreur": "cle invalide"}, 401)
+        if self._acces_refuse():
+            return
         if self.path == "/v1/notify":
             return self._notify()
         if self.path == "/v1/learn":
@@ -783,6 +865,9 @@ def demarrer_en_tache(host: str = "127.0.0.1", port: int | None = None,
     """
     if port is None:
         port = int(os.environ.get("AURA_API_PORT", "8760"))
+    souci = _verifier_exposition(host)
+    if souci:
+        raise ValueError(souci)
     etat = _Etat()
     serveur = ThreadingHTTPServer((host, port), _creer_handler(etat))
     serveur.daemon_threads = True
@@ -798,12 +883,21 @@ def main(argv=None) -> int:
     ap.add_argument("--port", type=int,
                     default=int(os.environ.get("AURA_API_PORT", "8760")))
     ap.add_argument("--host", default="127.0.0.1",
-                    help="127.0.0.1 par defaut : ne jamais exposer sur le reseau")
+                    help="127.0.0.1 par defaut ; hors loopback, exige "
+                         "AURA_API_CLE (>= 16 caracteres)")
     ap.add_argument("--no-preload", action="store_true",
                     help="ne pas charger le cerveau au demarrage")
     ap.add_argument("--smoke", action="store_true",
                     help="auto-test des routes puis exit 0")
     args = ap.parse_args(argv)
+
+    # REFUS AVANT D'ECOUTER : une API ouverte sans cle n'est pas un
+    # avertissement dans un journal que personne ne lit, c'est un acces
+    # complet au cerveau et aux fichiers locaux.
+    souci = _verifier_exposition(args.host)
+    if souci:
+        print(f"[api] REFUS : {souci}", file=sys.stderr)
+        return 2
 
     etat = _Etat(smoke=args.smoke)
     serveur = ThreadingHTTPServer((args.host, args.port), _creer_handler(etat))

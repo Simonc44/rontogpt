@@ -223,14 +223,3 @@ class TestLesClientsEcoutentLesDeuxPhases:
         assert "abonner_flux_phase" in source, (
             f"{module} s'abonne sans distinguer les phases : la reflexion du "
             "modele n'atteindrait jamais l'utilisateur")
-
-    def test_la_gui_affiche_la_pensee_dans_sa_propre_bulle(self):
-        """Le JS doit SEPARER les deux : concatener reviendrait a remettre la
-        pensee et la reponse dans le meme fil, ce que la demande produit
-        interdit."""
-        from pathlib import Path
-        racine = Path(__file__).resolve().parent.parent
-        source = (racine / "aura" / "web" / "index.html").read_text(
-            encoding="utf-8")
-        assert "donnees.phase === 'pensee'" in source
-        assert "bullePensee" in source

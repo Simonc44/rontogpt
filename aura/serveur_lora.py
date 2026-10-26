@@ -518,7 +518,7 @@ def _demarrer() -> bool:
     return False
 
 
-# Verrou de BOOT : le rechauffage en tache de fond (gui_web/api) et le
+# Verrou de BOOT : le rechauffage en tache de fond (api) et le
 # premier appel chat() peuvent arriver en meme temps — sans ce verrou,
 # deux llama-server partiraient sur le meme port.
 _verrou_boot = threading.Lock()

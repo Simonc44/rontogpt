@@ -87,8 +87,8 @@ def abonner_flux(fn: Callable[[str], None],
     `phases=LES_DEUX_PHASES` pour la voir passer (GUI, tableaux de bord).
 
     Renvoie la fonction de desabonnement (toujours a appeler en finally).
-    Thread-safe : la GUI s'abonne depuis son thread JS/pywebview pendant
-    que le cerveau publie depuis le thread d'inference.
+    Thread-safe : un client (API HTTP, TUI) s'abonne depuis son propre fil
+    pendant que le cerveau publie depuis le thread d'inference.
     """
     with _verrou_flux:
         for phase in phases:

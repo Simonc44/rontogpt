@@ -142,7 +142,7 @@ réponses »**.
 ┌──────────────────────────────────────────────────────────────┐
 │ 5. ÉVALUATION   banc qualité, tests, télémétrie locale        │
 ├──────────────────────────────────────────────────────────────┤
-│ 4. INTERFACES   API OpenAI, GUI web, GUI desktop, TUI, voix   │
+│ 4. INTERFACES   API OpenAI, GUI desktop, TUI, voix            │
 ├──────────────────────────────────────────────────────────────┤
 │ 3. CAPACITÉS    experts exacts · documents · web · outils     │
 │                 mémoire · personas                            │
@@ -161,7 +161,7 @@ réponses »**.
 | `runtime/` | `llama_cerveau`, `serveur_lora`, `profil_materiel`, `gguf_meta`, `adaptateurs`, `echantillonnage`, `verrou` | Regrouper + ajouter un **gestionnaire de modèles** |
 | `noyau/` | `pipeline_rontogpt`, `orchestrateur`, `routeur`, `aiguilleur`, `detection_demande`, `synthese_rontogpt`, `regles_reponse`, `verification_rontogpt`, `clarification` | Garder, instrumenter chaque étape en temps |
 | `capacites/` | `expert_symbolique`, `experts_rontogpt`, `calcul_*`, `logique`, `potcode`, `syllogismes`, `tri_transitif`, `memoire_web`, `graphe_faits`, `rag_binaire`, `concepts`, `embeddings` | Ajouter **documents locaux** ; fusionner les mémoires |
-| `interfaces/` | `api`, `gui_web`, `gui`, `tui`, `__main__`, `winmain`, `coucou`, `pal`, `typographie` | Ajouter **streaming partout** + onboarding |
+| `interfaces/` | `api`, `gui`, `tui`, `__main__`, `winmain`, `coucou`, `pal`, `typographie` | Ajouter **streaming partout** + onboarding |
 | `eval/` | `scripts/bench_qualite`, `scripts/sous_banc`, `tests/`, `resultats/` | Ajouter **30 questions** et un score latence/qualité |
 | `experimental/` | `selfplay`, `rlss`, `intercepteur_entropie`, `memoire_engraft`, `gemini`, `arbre_reflexion` | Archiver hors du chemin runtime |
 | `packaging/` | `kernel`, `signature`, `chiffrement` | Isoler : ce n'est pas du raisonnement |

@@ -10,8 +10,8 @@ Usage :
     python -m aura.maj --json     # sortie machine
     python -m aura.maj --ouvrir   # ouvre la page de la release dans le navigateur
 
-Appele aussi par la GUI au demarrage (aura.gui_web) : evenement
-``maj_disponible`` pousse vers le JS via window.auraEvenement.
+Aucune interface ne l'appelle au demarrage depuis le retrait de la GUI web :
+se lance a la demande, ou depuis un front via ``--json``.
 AURA_MAJ=0 desactive toute verification reseau.
 """
 from __future__ import annotations

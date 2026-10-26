@@ -49,15 +49,21 @@ _RACINE = Path(__file__).resolve().parent.parent
 #: rien dire.
 _PIP_AUDIT = "pip-audit==2.10.1"
 
-#: 1. `diskcache` (tire par llama-cpp-python) : aucune version corrective
-#:    n'est publiee, et le retirer voudrait dire retirer le moteur du cerveau.
-#: 2. `opentelemetry-api` (tire par google-adk) : le correctif existe (1.45.1)
-#:    mais google-adk 2.13.0 pinne la 1.42.1, donc `uv lock
-#:    --upgrade-package` ne peut pas la faire monter.
-#: Le jour ou l'un des deux avis tombe, retirer sa ligne d'ici ET du job de CI
-#: (`.github/workflows/tests.yml`) : les deux listes doivent rester identiques,
-#: sinon le local et la CI ne rendent plus le meme verdict.
-_AVIS_IGNORES = ("PYSEC-2026-2447", "CVE-2026-114603")
+#: `diskcache` (tire par llama-cpp-python) : aucune version corrective n'est
+#: publiee (PyPI s'arrete a 5.6.3, l'amont est dormant depuis mars 2024), et le
+#: retirer voudrait dire retirer le moteur du cerveau — `llama_cpp`
+#: l'importe des le chargement du module. L'avis suppose qu'une application
+#: LISE un cache disque ecrit par un attaquant ; aura n'instancie jamais
+#: `llama_cpp.LlamaDiskCache`.
+#:
+#: `opentelemetry-api` (CVE-2026-114603) n'est PLUS dans cette liste : il est
+#: monte a 1.45.1 par `[tool.uv] override-dependencies` (google-adk plafonne
+#: a <=1.44), et `tests/test_agents_adk.py` fait tourner la chaine ADK sur
+#: cette version.
+#: Le jour ou un avis de cette liste tombe, retirer sa ligne d'ici ET du job de
+#: CI (`.github/workflows/tests.yml`) : les deux listes doivent rester
+#: identiques, sinon le local et la CI ne rendent plus le meme verdict.
+_AVIS_IGNORES = ("PYSEC-2026-2447",)
 
 
 def interpreteur(venv: Path) -> Path:

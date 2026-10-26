@@ -222,9 +222,9 @@ d'origine et la précision sont **recollées** et le pipeline repart — cette f
 `banc_100.py`. Coupure : `AURA_CLARIFICATION=0`.
 
 La réponse porte `cerveau_choisi = "clarification"`, `en_attente = true` et un bloc
-`clarification` (`famille`, `manque`, `questions`), exposés tels quels par `/v1/ask` et la
-GUI web : un front peut marquer l'état « question en attente » au lieu de présenter une
-relance comme une réponse.
+`clarification` (`famille`, `manque`, `questions`), exposés tels quels par `/v1/ask` : un
+front peut marquer l'état « question en attente » au lieu de présenter une relance comme
+une réponse.
 
 **Preuve** : `tests/test_clarification.py` — dont **les 100 questions du banc, en 2
 contextes, ne sont interceptées 0 fois** ; et `tests/test_registre_experts.py` — **l'ordre
@@ -669,9 +669,35 @@ supprimé, `CONTRIBUTING.md` corrigé, métadonnées ajoutées (`license`,
 ### Dépendances : 5 avis de sécurité → 1, et un job pour surveiller
 
 `urllib3` figé en `2.7.0` portait **3 avis** corrigés en `2.8.0` : monté.
+`opentelemetry-api` portait **CVE-2026-114603** (coût CPU quadratique de
+`TraceState.from_header`), corrigé en `1.45.1` — mais `google-adk` 2.13.0, la
+dernière publiée, plafonne à `<=1.44`. `uv lock --upgrade-package` ne pouvait
+donc rien faire : c'est `[tool.uv] override-dependencies` qui force `1.45.1`.
+Le pari d'un plafond contourné se vérifie au lieu de se supposer :
+`tests/test_agents_adk.py` monte un `SequentialAgent` dans un `InMemoryRunner`
+et le fait tourner sur cette version.
+
 Reste `diskcache 5.6.3` (tiré par `llama-cpp-python`) : **aucun correctif
-publié**, donc accepté et **écrit noir sur blanc** dans le job `securite`
-(`--ignore-vuln` commenté), plutôt que toléré en silence.
+publié** (PyPI s'arrête à 5.6.3, l'amont est dormant depuis mars 2024), donc
+accepté et **écrit noir sur blanc** dans le job `securite` (`--ignore-vuln`
+commenté), plutôt que toléré en silence. L'avis suppose qu'une application
+**lise** un cache disque écrit par un attaquant : aura n'instancie jamais
+`llama_cpp.LlamaDiskCache` (aucun `set_cache` dans le paquet), et
+`llama_cpp.llama_cache` importe `diskcache` dès le chargement, donc la seule
+alternative serait de retirer le moteur du cerveau.
+
+Ce chemin n'est pas seulement inutilisé : il est **derrière quatre portails**
+(`aura/garde_cache_disque.py`), et `Llama.set_cache` est enveloppé dès le
+chargement du cerveau. Pour l'ouvrir il faut `AURA_CACHE_DISQUE=1`, un coffre
+`AURA_COFFRE_CACHE` en chemin absolu sans lien symbolique, ce coffre préparé par
+`python -m aura.garde_cache_disque --preparer` (marqueur `.coffre` portant son
+propre chemin, donc un coffre recopié ne passe pas), et — sous POSIX — dossier
+en 0700 et marqueur en 0600 appartenant au compte courant. Le « portail 0 » est
+un test : `tests/test_garde_cache_disque.py` échoue si `set_cache` ou
+`LlamaDiskCache` apparaît ailleurs dans `aura/`. Les portails ne retirent pas
+l'avis — le paquet reste installé, pip-audit le voit toujours — ils rendent le
+chemin vulnérable **inatteignable**, et chaque portail est refusé par son
+propre test.
 
 ### Les échecs silencieux parlent
 
@@ -731,8 +757,8 @@ dans le `finally`. Le seul geste qui compte est de **rendre** ce qu'on a pris.
 **72 %** de bout en bout, branches comprises (9527 instructions, `aura/` +
 `rontogpt/`) : `orchestrateur` 93 %, `filtre_instantane` 87 %, `potcode` 84 %,
 `config` 76 %, `llama_cerveau` 70 %, `api` 58 %, `kernel` 58 % — et `gui.py`
-comme `gui_web.py` à **0 %**, ce qui est le juste résultat : ces deux-là ne
-s'importent que devant une fenêtre.
+à **0 %**, ce qui est le juste résultat : il ne s'importe que devant une
+fenêtre.
 
 Ce que la mesure dit, et qu'aucun badge ne dira à notre place :
 
@@ -887,6 +913,32 @@ faux positifs que rien ne distinguait des vrais.
 Les mesures de §3septies et de §3nonies restent celles de **leur** commit (1149
 passés, 3 sautés) ; cette section est celle d'après : **1159 passés, 0 sauté** sur
 une machine complète.
+
+---
+
+## 3undecies. L'API locale ne s'ouvre plus sans clé (26 oct. 2026)
+
+L'audit du 26 oct. cherchait où l'application est réellement attaquable, et le
+résultat n'était pas dans une dépendance : il était dans `aura/api.py`.
+
+| Trouvé | Conséquence | Corrigé par |
+|---|---|---|
+| Clé **optionnelle** (`not attendue or ...`) et `--host 0.0.0.0` accepté | Un `--host 0.0.0.0` sur un Wi-Fi public donnait `/v1/ask`, `/v1/learn`, `/v1/memoire`, `/v1/cloud` à n'importe qui | Refus **au démarrage** hors loopback sans `AURA_API_CLE` ≥ 16 caractères — vérifié : code 2, port fermé |
+| `/v1/config` servait `config.efficace()` **sans masque** | `AURA_GEMINI_API_KEY` et `AURA_API_CLE` en clair à tout appelant | `efficace(masquer=True)` : les variables dont le nom porte `CLE`/`KEY`/`TOKEN`/… valent `***` (motif ancré sur `_`, donc `AURA_GEMINI_MAX_TOKENS` reste lisible) |
+| Routes qui **modifient** l'état joignables à distance | `/v1/cloud` écrit la clé Gemini dans `.env` ; `/v1/documents` indexe un fichier arbitraire ; `/v1/api/*` démarre/arrête l'atelier | `403` hors loopback, **même avec la bonne clé** : une clé peut fuiter, pas l'adresse source |
+| Clé comparée par `==` | Le temps de réponse dit combien de caractères sont justes | `hmac.compare_digest` |
+| L'atelier acceptait `--cle` sans **jamais** la vérifier | Le port parlait au cerveau sans authentification | Même contrôle que l'API, sur `/status` et `/v1/*` (seul `/health` reste ouvert pour la vivacité) |
+
+Vérifié sur une vraie socket, pas seulement en test unitaire : avec la clé,
+`/v1/config` rend `AURA_API_CLE = ***` ; `/v1/documents` répond **200** depuis
+`127.0.0.1` et **403** depuis l'adresse LAN de la machine ; sans clé, **401**.
+
+**Ce qui reste ouvert, et qui est écrit quand même** : `/v1/documents` accepte
+encore n'importe quel chemin en `.txt`/`.md`/`.pdf` (lecture de fichiers locaux,
+mais désormais impossible à distance), et la sandbox de `potcode` filtre les
+`builtins` sans filtrer les accès dunder — `().__class__.__bases__[0]` reste
+atteignable. Les deux sont les prochains blocs du durcissement, pas des
+détails.
 
 ---
 

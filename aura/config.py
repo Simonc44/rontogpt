@@ -3,7 +3,7 @@
 Pourquoi un module dedie : chaque module d'RontoGPT lit ses variables ``AURA_*``
 au moment de l'IMPORT (llama_cerveau._CHEMIN_GGUF, orchestrateur._SEUIL_*
 ...). ``appliquer()`` doit donc tourner AVANT d'importer l'orchestrateur —
-c'est le cas dans ``aura.api``, ``aura.gui_web`` et ``aura.__main__``.
+c'est le cas dans ``aura.api`` et ``aura.__main__``.
 
 Priorite (de la plus forte a la plus faible) :
     1. variable d'environnement deja posee par l'utilisateur
@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tomllib
 from pathlib import Path
 
@@ -200,9 +201,24 @@ def appliquer(chemin: Path | None = None,
     return {k: os.environ.get(k, "") for k in pose}
 
 
-def efficace() -> dict[str, str]:
-    """Les variables AURA_* actuellement visibles (affichage / diagnostic)."""
-    return {k: v for k, v in sorted(os.environ.items()) if k.startswith("AURA_")}
+#: Nom de variable qui PORTE un secret : le motif est ancre sur les
+#: separations (`_`) pour ne pas attraper `AURA_GEMINI_MAX_TOKENS`, qui
+#: contient « TOKEN » sans etre un secret.
+_SECRET = re.compile(r"(^|_)(CLE|KEY|TOKEN|SECRET|PASSWORD|PASSE)($|_)")
+
+
+def efficace(masquer: bool = False) -> dict[str, str]:
+    """Les variables AURA_* actuellement visibles (affichage / diagnostic).
+
+    `masquer=True` remplace la VALEUR des variables qui portent un secret
+    (`AURA_API_CLE`, `AURA_GEMINI_API_KEY`...) par `***` : `/v1/config` sert
+    cette table par HTTP, et elle y livrait la cle Gemini en clair.
+    """
+    vues = {k: v for k, v in sorted(os.environ.items()) if k.startswith("AURA_")}
+    if not masquer:
+        return vues
+    return {k: ("***" if v and _SECRET.search(k) else v)
+            for k, v in vues.items()}
 
 
 def version() -> str:

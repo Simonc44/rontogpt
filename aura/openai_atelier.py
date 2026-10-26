@@ -14,7 +14,9 @@ Usage (depuis la ligne de commande) :
 from __future__ import annotations
 
 import argparse
+import hmac
 import os
+import sys
 import threading
 import time
 from typing import Optional
@@ -62,6 +64,24 @@ etat = AtelierEtat()
 # ------------------------------------------------------------
 # FastAPI / uvicorn bootstrap
 # ------------------------------------------------------------
+def _refus_cle(entetes) -> Optional[JSONResponse]:
+    """401 si une cle est configuree et que la requete ne la porte pas.
+
+    La cle etait acceptee par `--cle` mais JAMAIS verifiee : n'importe qui
+    joignant le port parlait au cerveau. Meme comparaison en temps constant
+    que `aura.api`.
+    """
+    attendue = os.environ.get(API_KEY_ENV, "").strip()
+    if not attendue:
+        return None
+    fournie = str(entetes.get("x-rontogpt-cle")
+                  or entetes.get("x-aura-cle") or "")
+    if hmac.compare_digest(fournie, attendue):
+        return None
+    return JSONResponse({"ok": False, "erreur": "cle invalide"},
+                        status_code=401)
+
+
 def create_app() -> FastAPI:
     """Retourne l'instance FastAPI avec les routes /v1/*."""
 
@@ -72,7 +92,10 @@ def create_app() -> FastAPI:
         return JSONResponse({"ok": True, "etat": "sain"})
 
     @app.get("/status")
-    def status() -> JSONResponse:
+    def status(request: Request) -> JSONResponse:
+        refus = _refus_cle(request.headers)
+        if refus is not None:
+            return refus
         with etat.lock:
             return JSONResponse(
                 {
@@ -85,6 +108,9 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/ask")
     async def ask(request: Request) -> JSONResponse:
+        refus = _refus_cle(request.headers)
+        if refus is not None:
+            return refus
         # `Request.json()` est une COROUTINE (Starlette) : sans `await` elle
         # rend un objet coroutine, et `.get()` sur cet objet leve
         # AttributeError -> 500 sur chaque appel. Le handler doit donc etre
@@ -105,6 +131,9 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/ask/stream")
     async def ask_stream(request: Request) -> JSONResponse:  # simplifie pour l'exemple
+        refus = _refus_cle(request.headers)
+        if refus is not None:
+            return refus
         corps = await request.json()
         question = corps.get("question", "").strip()
         if not question:
@@ -123,7 +152,19 @@ def create_app() -> FastAPI:
 # Lancement du serveur
 # ------------------------------------------------------------
 def demarrer_serveur(port: int = DEFAULT_PORT, host: str = DEFAULT_HOST, cle: Optional[str] = None) -> None:
-    """Démarre le serveur uvicorn en thread autonome."""
+    """Démarre le serveur uvicorn en thread autonome.
+
+    Refuse de demarrer hors loopback sans cle : meme regle que `aura.api`
+    (`aura.api._verifier_exposition`), importe ICI et non en tete de module
+    parce que `aura.api` applique la configuration des son import.
+    """
+    if cle:
+        os.environ[API_KEY_ENV] = cle      # sinon `--cle` ne serait pas verifiee
+    from .api import _verifier_exposition
+
+    souci = _verifier_exposition(host)
+    if souci:
+        raise ValueError(souci)
     app = create_app()
     config = uvicorn.Config(app=app, host=host, port=port, log_level="warning")
     server = uvicorn.Server(config)
@@ -169,7 +210,11 @@ def main(argv: Optional[list] = None) -> None:
         print("[smoke] Module aura.openai_atelier charge OK avec create_app, demarrer_serveur, arreter_serveur")
         return
 
-    demarrer_serveur(port=args.port, host=args.host, cle=args.cle)
+    try:
+        demarrer_serveur(port=args.port, host=args.host, cle=args.cle)
+    except ValueError as e:
+        print(f"[atelier] REFUS : {e}", file=sys.stderr)
+        raise SystemExit(2) from e
 
     # Boucle principale : attend le signal d'arret (Ctrl+C)
     try:
