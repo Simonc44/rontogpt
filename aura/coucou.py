@@ -80,8 +80,14 @@ def _sid_utilisateur() -> str | None:
         # argtypes/restypes EXPLICITES obligatoires : sans eux, ctypes
         # tronque les pointeurs 64 bits en int 32, et ConvertSidToStringSidW
         # echoue. (Bug observe : repli silencieux sur USERNAME -> mauvais pipe.)
-        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # typeshed n'expose `WinDLL` que sous `sys.platform == "win32"` : mypy
+        # tourne sous Linux en CI et le declare donc absent. L'attribut EXISTE
+        # a l'execution ici (nous sommes deja dans la branche `_sur_windows()`),
+        # mais mypy ne sait pas le deduire de `os.name`. Un seul ignore, sur
+        # l'alias, plutot qu'un par appel.
+        WinDLL = ctypes.WinDLL  # type: ignore[attr-defined]
+        advapi32 = WinDLL("advapi32", use_last_error=True)
+        kernel32 = WinDLL("kernel32", use_last_error=True)
         TOKEN_QUERY = 0x0008
         TokenUser = 1
 

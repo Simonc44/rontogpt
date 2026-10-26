@@ -83,8 +83,12 @@ def test_la_commande_est_celle_de_la_ci(tmp_path, capsys, monkeypatch):
     # Un `--path` CALCULE : pip-audit sur un dossier inexistant rend un audit
     # vert sans avoir rien regarde.
     assert commande[commande.index("--path") + 1] == str(tmp_path)
-    for avis in ad._AVIS_IGNORES:
-        assert commande[commande.index("--ignore-vuln") + 1] == avis
+    # TOUS les avis, dans l'ordre : `commande.index("--ignore-vuln")` ne rend
+    # que la PREMIERE occurrence, donc une boucle dessus comparait chaque avis
+    # au premier. Le test ne le voyait pas tant qu'il n'y avait qu'un avis.
+    ignores = [commande[i + 1] for i, jeton in enumerate(commande)
+               if jeton == "--ignore-vuln"]
+    assert ignores == list(ad._AVIS_IGNORES)
 
 
 def test_versions_verrou_garde_toutes_les_versions_d_un_nom(tmp_path):

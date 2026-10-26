@@ -49,10 +49,15 @@ _RACINE = Path(__file__).resolve().parent.parent
 #: rien dire.
 _PIP_AUDIT = "pip-audit==2.10.1"
 
-#: `diskcache` (tire par llama-cpp-python) : aucune version corrective n'est
-#: publiee, et le retirer voudrait dire retirer le moteur du cerveau. Le jour
-#: ou un correctif sort, retirer l'avis d'ici ET du job de CI.
-_AVIS_IGNORES = ("PYSEC-2026-2447",)
+#: 1. `diskcache` (tire par llama-cpp-python) : aucune version corrective
+#:    n'est publiee, et le retirer voudrait dire retirer le moteur du cerveau.
+#: 2. `opentelemetry-api` (tire par google-adk) : le correctif existe (1.45.1)
+#:    mais google-adk 2.13.0 pinne la 1.42.1, donc `uv lock
+#:    --upgrade-package` ne peut pas la faire monter.
+#: Le jour ou l'un des deux avis tombe, retirer sa ligne d'ici ET du job de CI
+#: (`.github/workflows/tests.yml`) : les deux listes doivent rester identiques,
+#: sinon le local et la CI ne rendent plus le meme verdict.
+_AVIS_IGNORES = ("PYSEC-2026-2447", "CVE-2026-114603")
 
 
 def interpreteur(venv: Path) -> Path:

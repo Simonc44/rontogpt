@@ -165,6 +165,12 @@ module = [
     "sklearn.*", "joblib.*", "scipy.*", "gplearn.*",
     "ddgs.*", "duckduckgo_search.*", "llama_cpp.*",
     "chiffrement", "signature", "kernel",
+    # `pywebview` n'est plus une dependance declaree, mais `gui_web.py`
+    # l'importe sous `TYPE_CHECKING` (et au runtime dans `main`) : sans ce
+    # bloc, la CI Linux — ou le module est absent — refusait de typer le
+    # fichier. L'import reste OPTIONNEL : l'absence de pywebview ne doit
+    # jamais casser `aura` lui-meme.
+    "webview",
 ]
 ignore_missing_imports = true
 

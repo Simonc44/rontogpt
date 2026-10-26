@@ -269,10 +269,21 @@ jobs:
 
   # AVIS DE SECURITE connus sur les versions FIGEES du verrou. Une dependance
   # qui gagne un avis fait echouer ce job, et c'est voulu : c'est le moment de
-  # decider. Un seul avis est accepte aujourd'hui, `diskcache` (tire par
-  # llama-cpp-python) : AUCUNE version corrective n'est publiee, et le retirer
-  # voudrait dire retirer le moteur du cerveau. Le jour ou un correctif sort,
-  # retirer le --ignore-vuln et monter de version.
+  # decider. DEUX avis sont acceptes aujourd'hui, chacun pour une raison
+  # differente — et les deux doivent disparaitre des que possible :
+  #
+  # 1. `diskcache` (PYSEC-2026-2447, tire par llama-cpp-python) : AUCUNE
+  #    version corrective n'est publiee, et le retirer voudrait dire retirer
+  #    le moteur du cerveau.
+  # 2. `opentelemetry-api` (CVE-2026-114603, tire par google-adk) : le
+  #    correctif EXISTE (1.45.1) mais google-adk 2.13.0 epingle la 1.42.1, et
+  #    `uv lock --upgrade-package` ne peut donc pas la faire monter. Le jour
+  #    ou adk elargit son pin, retirer cette ligne : forcer la version par
+  #    `override-dependencies` a la place d'adk reviendrait a parier qu'aucune
+  #    API utilisee par l'ADK n'a change — pari qu'aucun test ne couvre ici.
+  #
+  # Ce que ce job a fait son travail : certifi, filelock (3 avis) et
+  # setuptools ont ete MONTES dans uv.lock plutot qu'ignores.
   securite:
     name: Dependances figees (pip-audit)
     runs-on: ubuntu-latest
@@ -300,7 +311,8 @@ jobs:
           test -d "$SP"
           echo "audit de $SP"
           uvx --from pip-audit==2.10.1 pip-audit --path "$SP" \
-            --ignore-vuln PYSEC-2026-2447
+            --ignore-vuln PYSEC-2026-2447 \
+            --ignore-vuln CVE-2026-114603
 
       # Le meme audit, EN LOCAL (Windows compris) : `python
       # scripts/audit_dependances.py`. Il calcule le `--path` du venv, epingle

@@ -670,6 +670,25 @@ def enregistrer(question: str, reponse: str):
             _sauver_vecteurs()
 
 
+def _cle_exacte(question: str) -> str:
+    """Forme comparable d'une question : minuscules, sans accents, sans
+    ponctuation. « Qui es-tu ? » et « qui es tu » rendent la MEME cle."""
+    n = unicodedata.normalize("NFKD", question.lower())
+    n = "".join(c for c in n if not unicodedata.combining(c))
+    return " ".join(re.findall(r"[a-z0-9]+", n))
+
+
+def _entree_exacte(question: str) -> int | None:
+    """Index de l'entree dont la question est la meme une fois normalisee."""
+    cible = _cle_exacte(question)
+    if not cible:
+        return None
+    for i, e in enumerate(_entrees):
+        if _cle_exacte(str(e.get("q", ""))) == cible:
+            return i
+    return None
+
+
 def mettre_a_jour(question: str, reponse: str) -> bool:
     """RECONSOLIDATION : remplace la reponse (similaire) existante par la nouvelle.
 
@@ -682,11 +701,15 @@ def mettre_a_jour(question: str, reponse: str) -> bool:
     if not question or not reponse or reponse.startswith("[RontoGPT]"):
         return False
     _charger_cache()
-    if _vectoriseur is None or _matrice is None:
-        # cache vide (aucune memoire a reconsolider) : rien a remplacer.
-        # Cas legitime : machine neuve, checkout CI sans .cache_reponses.jsonl.
-        return False
-    i = _similar(question.lower().strip())
+    # EXACT D'ABORD, FLOU ENSUITE (meme doctrine que `repondre_tout`). Sans ce
+    # passage, la reconsolidation dependait ENTIEREMENT de l'index MiniLM :
+    # sans lui (machine neuve, checkout CI sans `modeles/minilm`), « Qui es-tu ?
+    # » ne matchait pas l'entree « qui es tu » — le TF-IDF exige 0.85 et la
+    # ponctuation suffit a l'abaisser — et la correction du cache ne faisait
+    # RIEN, sans le dire. Le flou reste utile pour les vraies reformulations.
+    i = _entree_exacte(question)
+    if i is None and _vectoriseur is not None and _matrice is not None:
+        i = _similar(question.lower().strip())
     if i is None:
         return False
     # GARDE-FOU : ne JAMAIS reecrire la reponse d'une AUTRE question. Sans
