@@ -40,7 +40,7 @@ you prefer to stay anonymous.
 | **`.aef` integrity** | 3× SHA-256 (config, code, weights): one altered byte → boot refused. Tested in CI (tamper detection). |
 | **`.aef` confidentiality** | AES-256-GCM (AEAD) + PBKDF2-HMAC-SHA256, 600 000 iterations. The secret is never stored in the file. |
 | **Authenticity** | optional Ed25519 signature of the sealed file. |
-| **PoT-code sandbox** | restricted builtins (no `import`, `open`, `eval`, `exec`, `compile`, `getattr`), instruction budget enforced by `settrace` — infinite loops are killed deterministically. |
+| **PoT-code sandbox** | the code runs in a **child process** (`python -I -S`): restricted builtins (no `import`, `open`, `eval`, `exec`, `compile`, `getattr`), an AST gate refusing every dunder name/attribute, an instruction budget enforced by `settrace`, 256 MiB of memory (`RLIMIT_AS` on POSIX, a Job Object on Windows), a 10 s deadline killed by the parent, an empty working directory and a filtered environment (no `AURA_*`, no API keys). Not a system sandbox: same user, no syscall filter. |
 | **AST evaluator** | whitelisted node types only (never `eval()`), power/exponent bounds. |
 | **Hallucination control** | the fact graph only learns from web-verified answers; short factual answers are re-anchored on web proof (CRITIC) before delivery. |
 

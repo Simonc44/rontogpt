@@ -6,6 +6,14 @@ BLOC. La sandbox execute tout : un assert qui echoue = code refuse — le
 code rate ne sort JAMAIS, le pipeline retombe sur la generation normale.
 
 Securite (honnete) :
+- **processus separe** : le code s'execute dans un interpreteur ENFANT
+  (`python -I -S -c ...`), pas dans le processus d'RontoGPT. Une fuite de
+  la sandbox ne donne donc ni la memoire du cerveau, ni ses fichiers
+  ouverts, ni la possibilite de tuer l'API ; le parent impose un delai et
+  tue l'enfant ;
+- **limite memoire** : RLIMIT_AS 256 Mio (POSIX) et Job Object Windows
+  (limite de memoire du processus + mort avec le job) : un `bytearray`
+  geant echoue dans l'enfant au lieu de faire tomber la machine ;
 - builtins restrictifs : pas d'import, pas d'open/eval/exec/compile/getattr ;
 - **barriere AST** : tout nom ou attribut dunder (`__class__`,
   `__bases__`, `__globals__`...) est refuse AVANT l'execution. Les builtins
@@ -17,9 +25,13 @@ Securite (honnete) :
 - extrait UNIQUEMENT du code entre balises ```python ... ``` ou ``` ... ```.
 """
 import ast
+import json
 import logging
+import os
 import re
+import subprocess
 import sys
+import tempfile
 import unicodedata
 
 LOG = logging.getLogger("aura.potcode")
@@ -69,10 +81,6 @@ def extraire_code(texte: str) -> str | None:
     return code or None
 
 
-class _BudgetEpuise(Exception):
-    pass
-
-
 def _refuser_evasions(arbre: ast.AST) -> None:
     """Refuse les constructions qui menent hors de la sandbox, AVANT `exec`.
 
@@ -104,71 +112,216 @@ def _refuser_evasions(arbre: ast.AST) -> None:
                              f"chaine de formatage (ligne {noeud.lineno})")
 
 
-def _executer_sandbox(code: str,
-                      budget: int = _BUDGET_INSTRUCTIONS) -> dict:
-    """Compile et execute le code (definition + asserts) dans la sandbox.
+#: Memoire maximale du processus de la sandbox.
+_MEMOIRE_MAX = 256 << 20
+#: Delai maximal d'un code (secondes) : le budget d'instructions arrete les
+#: boucles, celui-ci attrape le reste (attente bloquante, calcul lourd).
+_DELAI_MAX = 10.0
 
-    Renvoie l'environnement d'execution. Leve ValueError si le code est
-    refuse : syntaxe, instruction illicite, budget depasse, assert rate.
+#: Programme de l'ENFANT. Volontairement autonome : il n'importe PAS `aura`
+#: (l'import du paquet charge le cerveau et tout le pipeline), il recoit le
+#: code, le budget et la liste des builtins autorises en JSON sur stdin.
+_RUNNER = '''
+import builtins, json, sys
+
+demande = json.loads(sys.stdin.read())
+code, budget, noms = demande["code"], demande["budget"], demande["builtins"]
+
+# LIMITES DU PROCESSUS, posees par l'enfant lui-meme (POSIX). Windows est
+# borne par un Job Object cote parent. Best-effort : un systeme sans
+# `resource` n'empeche pas le code de tourner, il retire juste la borne.
+try:
+    import resource
+    resource.setrlimit(resource.RLIMIT_AS, (256 << 20, 256 << 20))
+    resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (1 << 20, 1 << 20))
+except Exception:
+    pass
+
+env = {"__builtins__": {n: getattr(builtins, n) for n in noms
+                        if hasattr(builtins, n)}}
+compteur = [0]
+
+
+def repondre(**kw):
+    print(json.dumps(kw))
+    raise SystemExit(0)
+
+
+def trace(frame, event, arg):
+    if event == "line":
+        compteur[0] += 1
+        if compteur[0] > budget:
+            raise SystemExit("budget")
+    return trace
+
+
+sys.settrace(trace)
+try:
+    exec(compile(code, "<aura-sandbox>", "exec"), env)
+except AssertionError as e:
+    repondre(ok=False, erreur="assert echoue : %s" % (e or "(sans message)"))
+except SystemExit as e:
+    if str(e) == "budget":
+        repondre(ok=False, erreur="budget d'instructions depasse "
+                                  "(boucle infinie ?)")
+    repondre(ok=False, erreur="sortie interdite dans la sandbox")
+except MemoryError:
+    repondre(ok=False, erreur="memoire du bac a sable depassee (256 Mio)")
+except Exception as e:
+    repondre(ok=False, erreur="execution illicite : %s: %s"
+                              % (type(e).__name__, e))
+
+if not callable(env.get("resoudre")):
+    repondre(ok=False, erreur="fonction resoudre absente")
+repondre(ok=True, asserts=sum(1 for ligne in code.splitlines()
+                              if ligne.strip().startswith("assert ")))
+'''
+
+
+def _env_enfant() -> dict[str, str]:
+    """Environnement minimal de l'enfant : ni AURA_*, ni identifiants."""
+    # Liste BLANCHE : ce dont un interpreteur a besoin pour demarrer, et rien
+    # qui ressemble a un secret (`AURA_*`, `*_KEY`, `*_TOKEN` n'y sont pas par
+    # construction ; une liste noire laisserait passer `DB_PASSWORD`).
+    gardes = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "COMSPEC",
+              "WINDIR", "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE",
+              "LANG", "LC_ALL", "LD_LIBRARY_PATH", "VIRTUAL_ENV")
+    env = {k: v for k, v in os.environ.items() if k in gardes}
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
+def _job_memoire_windows(proc: subprocess.Popen) -> "object | None":
+    """Job Object Windows : memoire bornee et mort avec le job.
+
+    `resource` n'existe pas sous Windows ; c'est le SEUL endroit ou la limite
+    memoire peut etre posee la-bas. Best-effort assume : si l'API refuse, on
+    le dit dans le journal et le reste de la sandbox (processus separe,
+    delai, AST, builtins) reste en place.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class Ioc(ctypes.Structure):
+            _fields_ = [("ReadOperationCount", ctypes.c_ulonglong),
+                        ("WriteOperationCount", ctypes.c_ulonglong),
+                        ("OtherOperationCount", ctypes.c_ulonglong),
+                        ("ReadTransferCount", ctypes.c_ulonglong),
+                        ("WriteTransferCount", ctypes.c_ulonglong),
+                        ("OtherTransferCount", ctypes.c_ulonglong)]
+
+        class Basique(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong),
+                        ("PerJobUserTimeLimit", ctypes.c_longlong),
+                        ("LimitFlags", ctypes.c_ulong),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", ctypes.c_ulong),
+                        ("Affinity", ctypes.c_size_t),
+                        ("PriorityClass", ctypes.c_ulong),
+                        ("SchedulingClass", ctypes.c_ulong)]
+
+        class Etendu(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", Basique),
+                        ("IoInfo", Ioc),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        noyau = ctypes.WinDLL("kernel32", use_last_error=True)
+        noyau.CloseHandle.argtypes = [wintypes.HANDLE]
+        noyau.AssignProcessToJobObject.argtypes = [wintypes.HANDLE,
+                                                   wintypes.HANDLE]
+        noyau.CreateJobObjectW.restype = wintypes.HANDLE
+        job = noyau.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        infos = Etendu()
+        # PROCESS_MEMORY | KILL_ON_JOB_CLOSE : 256 Mio, et le processus meurt
+        # avec le job meme si le parent disparait.
+        infos.BasicLimitInformation.LimitFlags = 0x00000100 | 0x00002000
+        infos.ProcessMemoryLimit = _MEMOIRE_MAX
+        if not noyau.SetInformationJobObject(job, 9, ctypes.byref(infos),
+                                             ctypes.sizeof(infos)):
+            noyau.CloseHandle(job)
+            return None
+        handle = getattr(proc, "_handle", None)
+        if handle is None or not noyau.AssignProcessToJobObject(job, handle):
+            noyau.CloseHandle(job)
+            return None
+        return job
+    except Exception as e:  # noqa: BLE001 — la sandbox reste utilisable
+        LOG.warning("[potcode] limite memoire Windows indisponible : %s", e)
+        return None
+
+
+def _executer_isole(code: str, budget: int,
+                    timeout: float = _DELAI_MAX) -> dict:
+    """Execute le code dans un processus ENFANT jetable et rend son rapport.
+
+    Le parent ne partage ni memoire, ni fichiers ouverts, ni verrous avec
+    l'enfant : une evasion de la barriere AST atteindrait un interpreteur
+    qui ne connait ni le cerveau, ni l'API, ni la memoire de conversation.
+    """
+    demande = json.dumps({"code": code, "budget": budget,
+                          "builtins": sorted(_SANDBOX_BUILTINS)})
+    with tempfile.TemporaryDirectory(prefix="aura-sandbox-") as dossier:
+        proc = subprocess.Popen(
+            [sys.executable, "-I", "-S", "-c", _RUNNER],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, cwd=dossier,
+            env=_env_enfant(),
+            creationflags=0x08000000 if os.name == "nt" else 0)
+        job = _job_memoire_windows(proc)
+        try:
+            sortie, erreur = proc.communicate(demande, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            raise ValueError("delai de la sandbox depasse (code bloque)")
+        finally:
+            if job is not None:
+                import ctypes
+                ctypes.windll.kernel32.CloseHandle(job)
+
+    # Le rapport est la DERNIERE ligne : une sortie parasite de l'enfant
+    # (avertissement, trace) ne doit pas transformer un refus en panne.
+    lignes = [ligne for ligne in (sortie or "").splitlines() if ligne.strip()]
+    try:
+        rapport = json.loads(lignes[-1] if lignes else "{}")
+    except ValueError as e:
+        detail = (erreur or "").strip()[:200] or "aucune sortie"
+        raise ValueError(f"sandbox muette ({detail})") from e
+    if not rapport.get("ok"):
+        raise ValueError(str(rapport.get("erreur") or "code refuse"))
+    return rapport
+
+
+def verifier_code(code: str, budget: int = _BUDGET_INSTRUCTIONS) -> dict:
+    """Chaine complete : extraction deja faite -> barriere AST -> enfant.
+
+    Un assert qui echoue leve ValueError : le code rate ne sort jamais.
+    Rend ``{"nb_asserts", "statut"}`` — plus la fonction : elle vit dans
+    l'enfant, qui meurt apres verification. Aucun appelant ne s'en servait,
+    et la garder aurait oblige a re-executer le code dans CE processus.
     """
     try:
-        # `ast.parse` d'abord : la barriere inspecte l'ARBRE. `compile()` rend
-        # un objet code (pas un AST), et `ast.walk` y voit des `node._fields`
-        # inexistants — l'erreur que ce detour a deja produite.
         syntaxe = ast.parse(code, filename="<aura-sandbox>", mode="exec")
-        arbre = compile(syntaxe, "<aura-sandbox>", "exec")
     except SyntaxError as e:
         raise ValueError(f"syntaxe invalide : {e}") from e
     _refuser_evasions(syntaxe)
 
-    env: dict = {"__builtins__": dict(_SANDBOX_BUILTINS)}
-    compteur = {"n": 0}
-
-    def _trace(frame, event, arg):
-        if event == "line":
-            compteur["n"] += 1
-            if compteur["n"] > budget:
-                raise _BudgetEpuise()
-        return _trace
-
-    # LE TRACEUR PRECEDENT EST RESTAURE, jamais efface. `sys.settrace(None)`
-    # supprimait celui de l'HOTE : un debuggeur, un profileur ou la couverture
-    # de code attaches au meme processus se taisaient apres le premier code
-    # execute en sandbox. Mesure (16 oct. 2026) : sur la MEME suite, `pytest
-    # --cov` rendait 20 % quand le traceur etait efface et 58 % quand il etait
-    # restaure — les modules exercises APRES le premier sandbox (routeur,
-    # pipeline, llama_cerveau) tombaient a 7-20 % contre 59-71 % en isolation.
-    precedent = sys.gettrace()
-    sys.settrace(_trace)
-    try:
-        exec(arbre, env)            # noqa: S102 — sandbox construite pour
-    except _BudgetEpuise:
-        raise ValueError("budget d'instructions depasse (boucle infinie ?)")
-    except AssertionError as e:
-        raise ValueError(f"assert echoue : {e or '(sans message)'}")
-    except Exception as e:
-        raise ValueError(f"execution illicite : {type(e).__name__}: {e}")
-    finally:
-        sys.settrace(precedent)
-    return env
-
-
-def verifier_code(code: str, budget: int = _BUDGET_INSTRUCTIONS) -> dict:
-    """Chaine complete : extraction deja faite -> sandbox + asserts.
-
-    Un assert qui echoue leve ValueError : le code rate ne sort jamais.
-    Renvoie un rapport avec la fonction validee.
-    """
-    env = _executer_sandbox(code, budget)
-    fn = env.get("resoudre")
-    if not callable(fn):
-        raise ValueError("fonction resoudre absente")
-    nb_asserts = sum(1 for ligne in code.splitlines()
-                     if ligne.strip().startswith("assert "))
+    rapport = _executer_isole(code, budget)
+    nb_asserts = int(rapport.get("asserts") or 0)
     if nb_asserts == 0:
         raise ValueError("aucun assert fourni")
     LOG.info("[potcode] code valide : %d asserts passes", nb_asserts)
-    return {"fonction": fn, "nb_asserts": nb_asserts, "statut": "valide"}
+    return {"nb_asserts": nb_asserts, "statut": "valide"}
 
 
 # ---------------------------------------------------------------------------

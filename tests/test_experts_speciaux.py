@@ -3,6 +3,8 @@
 Cibles : les 2 territoires ou le 8B gagnait encore — la logique SANS
 nombres et le code.
 """
+import sys
+
 import pytest
 
 from aura import logique, potcode
@@ -255,3 +257,41 @@ class TestSandboxEvasions:
             "assert resoudre([1, -2, 3]) == [2, 6]",
         ])
         assert potcode.verifier_code(code)["statut"] == "valide"
+
+
+class TestSandboxIsolement:
+    """Le code s'execute dans un processus ENFANT borne, pas dans l'hote.
+
+    La barriere AST ferme les evasions connues ; elle ne remplace pas les
+    barrieres qui ne dependent pas du langage : memoire bornee, delai,
+    environnement sans secrets. C'est ce que ces tests verrouillent.
+    """
+
+    CODE = ("def resoudre(d):\n"
+            "    return sorted(d)\n"
+            "assert resoudre([2, 1]) == [1, 2]\n")
+
+    def test_le_traceur_de_l_hote_reste_intact(self):
+        avant = sys.gettrace()
+        potcode.verifier_code(self.CODE)
+        assert sys.gettrace() is avant, (
+            "la sandbox toucherait le traceur du processus appelant")
+
+    def test_memoire_bornee(self):
+        code = ("def resoudre(d):\n"
+                "    return [0] * 200_000_000\n"
+                "assert resoudre(1)\n")
+        with pytest.raises(ValueError, match="memoire"):
+            potcode.verifier_code(code)
+
+    def test_delai_impose_par_le_parent(self):
+        with pytest.raises(ValueError, match="delai"):
+            potcode._executer_isole(self.CODE, 10_000, timeout=0.01)
+
+    def test_l_enfant_ne_recoit_pas_les_secrets(self, monkeypatch):
+        monkeypatch.setenv("AURA_CLE_API", "secret")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        env = potcode._env_enfant()
+        assert "AURA_CLE_API" not in env
+        assert "OPENAI_API_KEY" not in env
+        assert env.get("PYTHONIOENCODING") == "utf-8"
