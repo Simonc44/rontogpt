@@ -5,72 +5,62 @@ SON terminal. Chaque `logging.warning` (les caches du routeur non scelles, par
 exemple) tombait PAR-DESSUS l'interface Bun : en-tete dedouble, lignes
 `[integrite] ...` collees dans la barre de saisie. `_isoler_sorties` detourne
 les descripteurs 1 et 2 vers `logs/tui-api.log`, et rend les anciens a Bun.
+
+Les tests tournent dans un PROCESSUS ENFANT : `_isoler_sorties` fait `dup2`
+sur les descripteurs du processus, et le faire dans pytest detournerait la
+sortie de la suite elle-meme (le run peut alors se bloquer dans la capture).
 """
-import os
+import subprocess
 import sys
 
-import pytest
+SCRIPT = r"""
+import os
+import sys
+from pathlib import Path
 
 from aura import tui
 
-
-@pytest.fixture(autouse=True)
-def journal_propre():
-    """`_isoler_sorties` remplace la journalisation (`force=True`).
-
-    Sans cette restitution, pytest perd son gestionnaire de capture pour la
-    suite du run : les tests passeraient ou non selon l'ordre tire.
-    """
-    import logging
-
-    handlers, niveau = logging.root.handlers[:], logging.root.level
-    yield
-    logging.root.handlers[:] = handlers
-    logging.root.setLevel(niveau)
+tui._RACINE = Path(sys.argv[1])
+anciennes = tui._isoler_sorties()
+if anciennes is None:
+    print("DISPONIBLE", flush=True)
+    raise SystemExit(0)
+os.write(1, b"AVANT stdout\n")
+os.write(2, b"AVANT stderr\n")
+tui._rendre_sorties(anciennes)
+print("APRES restauration")          # doit revenir sur la sortie normale
+sys.stdout.flush()
+"""
 
 
-@pytest.fixture()
-def racine(tmp_path, monkeypatch):
-    """Un faux projet : le journal atterrit dans `tmp_path/logs/`."""
-    monkeypatch.setattr(tui, "_RACINE", tmp_path)
-    return tmp_path
+def _jouer(tmp_path):
+    return subprocess.run([sys.executable, "-c", SCRIPT, str(tmp_path)],
+                          capture_output=True, text=True, timeout=120)
 
 
-def test_les_sorties_partent_dans_le_journal(racine):
-    anciennes = tui._isoler_sorties()
-    if anciennes is None:                 # systeme sans dup2 utilisable
-        pytest.skip("detournement des sorties indisponible ici")
-    try:
-        # `os.write` et pas `print` : on teste les DESCRIPTEURS, pas le
-        # tampon de `sys.stdout` (que pytest a deja remplace).
-        os.write(1, b"[tui] stdout detourne\n")
-        os.write(2, b"[tui] stderr detourne\n")
-        sys.stdout.flush()
-        sys.stderr.flush()
-    finally:
-        tui._rendre_sorties(anciennes)
-
-    journal = racine / "logs" / "tui-api.log"
+def test_les_sorties_partent_dans_le_journal(tmp_path):
+    r = _jouer(tmp_path)
+    assert r.returncode == 0, r.stderr
+    if "DISPONIBLE" in r.stdout:          # systeme sans dup2 utilisable
+        return
+    journal = tmp_path / "logs" / "tui-api.log"
     assert journal.is_file(), "aucun journal ecrit"
     texte = journal.read_text(encoding="utf-8", errors="replace")
-    assert "stdout detourne" in texte
-    assert "stderr detourne" in texte
+    assert "AVANT stdout" in texte and "AVANT stderr" in texte
 
 
-def test_les_sorties_sont_rendues_apres_le_tui(racine):
+def test_les_sorties_sont_rendues_apres_le_tui(tmp_path):
     """Ce qui est ecrit APRES la restauration ne doit pas finir au journal."""
-    anciennes = tui._isoler_sorties()
-    if anciennes is None:
-        pytest.skip("detournement des sorties indisponible ici")
-    tui._rendre_sorties(anciennes)
-    os.write(1, b"[tui] apres restauration\n")
-    sys.stdout.flush()
-
-    journal = racine / "logs" / "tui-api.log"
-    texte = journal.read_text(encoding="utf-8", errors="replace") if journal.is_file() else ""
-    assert "apres restauration" not in texte
+    r = _jouer(tmp_path)
+    assert r.returncode == 0, r.stderr
+    if "DISPONIBLE" in r.stdout:
+        return
+    assert "APRES restauration" in r.stdout
+    journal = tmp_path / "logs" / "tui-api.log"
+    assert "APRES restauration" not in journal.read_text(encoding="utf-8")
 
 
 def test_restaurer_sans_avoir_isole_ne_casse_rien():
     """`_rendre_sorties(None)` est le chemin « detournement impossible »."""
+    from aura import tui
     tui._rendre_sorties(None)              # ne doit rien lever

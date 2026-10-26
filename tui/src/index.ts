@@ -40,8 +40,9 @@ import {
   t,
 } from "@opentui/core";
 import {
-  BASE, api, cloud, compacter, configurerCloud, etat, formaterDuree, initialiser,
-  memoire, editerMemoire, documents, editerDocuments, reglerLangue, reinitialiser, repondre, sante,
+  BASE, api, cloud, compacter, configurerCloud, demanderGemini, etat,
+  formaterDuree, initialiser, memoire, editerMemoire, documents, editerDocuments,
+  reglerLangue, reinitialiser, repondre, sante,
 } from "./client";
 import type { EtatContexte, InfoCloud, InfoEtat } from "./client";
 import type { InfoApi } from "./client";
@@ -299,6 +300,7 @@ const AIDE = [
   "  /plan <goal>   create a checklist; /plan done marks the next task",
   "  /compact   drop the raw window, keep durable facts",
   "  /cloud     Gemini: key, on/off, fallback, long-form writing",
+  "  /gemini    send the last question to Gemini (shows it first; /gemini oui)",
   "  /status    profile, llama.cpp, brain budget (alias /etat)",
   "  /quit      exit (alias /quitter)",
   "",
@@ -358,33 +360,51 @@ function flash(texte: string, couleur: string, duree = 1500): void {
   flashMinuteur = setTimeout(() => {
     flashMinuteur = null;
     flashActif = false;
-    if (arret || renderer.isDestroyed) return;
-    piedEtat.content = "";
-    piedEtat.fg = TH.discret;
-    renderer.requestRender();
+    peindrePied();                 // on retrouve l'etat + la jauge, pas du vide
   }, duree);
+}
+
+// Ligne d'etat du pied de page : un etat court (hors ligne, chargement, plan)
+// et, a droite, la JAUGE DE CONTEXTE. Deux informations stables, un seul
+// endroit : la ligne ne clignote pas entre l'une et l'autre.
+let etatBase = "";
+let couleurEtat: string = TH.discret;
+let jaugeContexte = "";
+
+function peindrePied(): void {
+  if (arret || renderer.isDestroyed) return;
+  if (flashActif) return;          // un flash en cours garde la ligne
+  piedEtat.content = [etatBase, jaugeContexte].filter(Boolean).join("  ·  ");
+  piedEtat.fg = couleurEtat;
+  renderer.requestRender();
+}
+
+/** Jauge de contexte (aura/contexte.py) : « contexte 42 % ». */
+function majJauge(contexte: EtatContexte | null | undefined): void {
+  jaugeContexte = contexte ? `contexte ${contexte.pourcentage} %` : "";
+  peindrePied();
 }
 
 function majEntete(info: InfoEtat | null, nota = ""): void {
   if (arret || renderer.isDestroyed) return;
   if (info === null) {
     majTitre(null);
-    if (flashActif) return;          // un flash en cours garde la ligne
-    piedEtat.content = `hors ligne${nota}`;
-    piedEtat.fg = TH.erreur;
-    renderer.requestRender();
+    etatBase = `hors ligne${nota}`;
+    couleurEtat = TH.erreur;
+    peindrePied();
     return;
   }
   majTitre(info.version);
-  if (flashActif) return;
-  piedEtat.content = info.chargement ? "chargement…" : (modePlan ? "plan mode" : "");
-  piedEtat.fg = TH.alerte;
-  renderer.requestRender();
+  etatBase = info.chargement ? "chargement…" : (modePlan ? "plan mode" : "");
+  couleurEtat = TH.alerte;
+  peindrePied();
 }
 
 // -- un tour de conversation ------------------------------------------------
 let enVol: false | AbortController = false;
 let voixActive = false;
+//: Derniere question posee LOCALEMENT : c'est elle que `/gemini` enverrait.
+let derniereQuestion = "";
 
 /** Lecture SAPI locale sous Windows : aucune reponse ne quitte la machine. */
 function direLocalement(texte: string): void {
@@ -462,6 +482,7 @@ async function envoyer(question: string): Promise<string> {
     note("Un tour est déjà en cours — Échap pour l'interrompre.", TH.alerte);
     return "";
   }
+  derniereQuestion = question;      // ce que `/gemini` enverrait
   const { puce, attente, corps, meta } = tour(question);
   // Le fil affiche la question REELLE ; le cerveau recoit la consigne de
   // plan en plus, uniquement quand le mode plan est actif.
@@ -556,8 +577,14 @@ async function envoyer(question: string): Promise<string> {
             : (pv.niveau === "inconnu" || pv.quitte_la_machine) ? TH.alerte : TH.discret;
           poserMeta(`${signe} ${pv.badge} — ${pv.detail}`, ton);
         }
+        if (e.repli_propose) {
+          // Le local a ete juge insuffisant : UNE ligne discrete, jamais un
+          // envoi. `/gemini` montrera la question exacte et demandera oui.
+          poserMeta(habillerMeta("/gemini pour demander à Gemini"), TH.doux);
+        }
         if (e.contexte?.sature) note(phraseContexte(e.contexte), TH.alerte);
         if (!e.ok && e.erreur) note(`Le cerveau signale : ${e.erreur}`, TH.erreur);
+        majJauge(e.contexte);
         direLocalement(affiche);
       } else if (e.type === "erreur") {
         finirAttente();
@@ -583,6 +610,7 @@ async function envoyer(question: string): Promise<string> {
     // Le cerveau vient de charger (premier tour) : on rafraichit tout de
     // suite le pied de page, au lieu d'attendre le sondage de 5 s.
     void etat().then((info) => majEntete(info));
+    void memoire().then((m) => majJauge(m?.contexte));
   }
   return affiche;
 }
@@ -639,6 +667,49 @@ function resumeCloud(info: InfoCloud): string {
     "  /cloud writing on | off     long-form drafts go to Gemini",
     "  /cloud model <name>         default gemini-2.5-flash",
   ].filter((l) => l !== "").join("\n");
+}
+
+/**
+ * `/gemini` : DEUX temps, jamais d'envoi silencieux.
+ *
+ * `/gemini` montre la question exacte qui partirait et dit qu'elle quitte
+ * l'ordinateur ; `/gemini oui` l'envoie (`POST /v1/ask/cloud`, qui exige de
+ * son cote `confirme: true`). Toute autre reponse annule, et le dit.
+ */
+async function traiterGemini(argument: string): Promise<void> {
+  const mot = argument.trim().toLowerCase();
+  const sansQuestion = derniereQuestion === "";
+  if (mot === "") {
+    note(sansQuestion
+      ? "Rien à envoyer : posez d'abord une question locale."
+      : [
+          "Envoyer à Gemini ?",
+          `  question : ${derniereQuestion}`,
+          "  Cette question QUITTE votre ordinateur (API Google).",
+          "  /gemini oui   l'envoyer",
+          "  /gemini non   rester en local",
+        ].join("\n"), sansQuestion ? TH.doux : TH.alerte);
+    return;
+  }
+  if (mot !== "oui" && mot !== "yes") {
+    note("Envoi annulé — rien n'a quitté votre ordinateur.", TH.doux);
+    return;
+  }
+  if (sansQuestion) {
+    note("Rien à envoyer : posez d'abord une question locale.", TH.doux);
+    return;
+  }
+  if (enVol !== false) {
+    note("Un tour est en cours — Échap pour l'interrompre.", TH.alerte);
+    return;
+  }
+  note(`Envoi à Gemini : « ${derniereQuestion} »`, TH.doux);
+  const r = await demanderGemini(derniereQuestion);
+  if (r.ok) {
+    note(`Gemini (${r.latence.toFixed(1)} s)\n${r.reponse}`, TH.texte);
+    return;
+  }
+  note(`Gemini n'a pas répondu : ${r.erreur ?? "erreur inconnue"}`, TH.erreur);
 }
 
 async function traiterCloud(arguments_: string): Promise<void> {
@@ -894,6 +965,11 @@ async function traiter(brut: string): Promise<void> {
     await traiterApi(texte.replace(/^\/?api\b/i, "").trim());
     return;
   }
+  // `/gemini` exige le slash : le mot nu peut etre dans une vraie question.
+  if (/^\/gemini\b/i.test(texte)) {
+    await traiterGemini(texte.replace(/^\/gemini\b/i, "").trim());
+    return;
+  }
   // `/cloud` explicite, ou mot nu suivi d'une sous-commande connue : une
   // vraie question qui commence par « cloud computing… » part au cerveau.
   const cmdCloud = texte.match(/^(\/)?(?:cloud|nuage)\b\s*(.*)$/i);
@@ -1100,6 +1176,9 @@ if (santeInfo === null) {
 suiviEtat = setInterval(() => {
   if (arret || renderer.isDestroyed) return;
   void etat().then((info) => majEntete(info));
+  // La jauge suit le meme rythme : elle vient de `memoire().contexte`, pas
+  // d'un compteur local, donc elle dit la MEME chose que `/memory`.
+  if (enVol === false) void memoire().then((m) => majJauge(m?.contexte));
 }, 5000);
 
 // -- mode --smoke : parcours complet sans humain ----------------------------
