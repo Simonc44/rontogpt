@@ -124,6 +124,56 @@ def _installer_si_besoin() -> None:
     subprocess.call([npm, "install", "--no-audit", "--no-fund"], cwd=str(_TUI))
 
 
+def _isoler_sorties() -> tuple[int, int] | None:
+    """Detourne stdout/stderr de CE processus vers `logs/tui-api.log`.
+
+    Le cerveau et l'API tournent dans le meme processus que le lanceur, donc
+    dans le meme terminal que l'ecran Bun. Tout ce qu'ils ecrivent (un
+    `logging.warning`, un `print`, un message de llama.cpp) tombait PAR-DESSUS
+    l'interface : en-tete dedouble, « Bonjour » en double, lignes
+    `[integrite] ... n'est pas scelle` collees dans la barre de saisie.
+
+    Rend les descripteurs d'origine (stdout, stderr) a donner a Bun, ou None
+    si le detournement est impossible (l'ecran reste alors comme avant).
+    """
+    import logging
+    chemin = _RACINE / "logs" / "tui-api.log"
+    try:
+        chemin.parent.mkdir(parents=True, exist_ok=True)
+        # Journalisation Python : un gestionnaire fichier remplace le
+        # gestionnaire de secours qui ecrit sur stderr (donc sur l'ecran).
+        logging.basicConfig(filename=str(chemin), encoding="utf-8",
+                            level=logging.WARNING, force=True,
+                            format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    except OSError:
+        return None
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        sortie, erreur = os.dup(1), os.dup(2)
+        journal = os.open(str(chemin), os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+        os.dup2(journal, 1)
+        os.dup2(journal, 2)
+        os.close(journal)
+        return sortie, erreur
+    except OSError:
+        return None
+
+
+def _rendre_sorties(anciennes: tuple[int, int] | None) -> None:
+    if anciennes is None:
+        return
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(anciennes[0], 1)
+        os.dup2(anciennes[1], 2)
+        os.close(anciennes[0])
+        os.close(anciennes[1])
+    except OSError:
+        pass
+
+
 def lancer(argv: list[str] | None = None) -> int:
     """Ouvre le TUI. Rend 127 si l'interface n'est pas installable."""
     _installer_si_besoin()
@@ -141,8 +191,15 @@ def lancer(argv: list[str] | None = None) -> int:
     # AURA_API_URL transmise au TUI : il vise la meme API que nous, meme si
     # l'utilisateur a change de port via AURA_API_PORT.
     env = {**os.environ, "AURA_API_URL": URL}
+    # Bun garde le vrai terminal ; tout le reste du processus ecrit au journal.
+    anciennes = _isoler_sorties()
+    options: dict = {}
+    if anciennes is not None:
+        options = {"stdout": anciennes[0], "stderr": anciennes[1]}
     try:
         return subprocess.call([str(bun), str(_INDEX), *(argv or [])],
-                               cwd=str(_RACINE), env=env)
+                               cwd=str(_RACINE), env=env, **options)
     except KeyboardInterrupt:              # Ctrl+C pendant le rendu du TUI
         return 0
+    finally:
+        _rendre_sorties(anciennes)

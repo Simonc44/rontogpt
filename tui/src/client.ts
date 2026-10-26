@@ -106,7 +106,7 @@ async function lire<T>(chemin: string, init: RequestInit = {},
 export const sante = () => lire<{ status: string; version: string; build?: string }>("/v1/health");
 export const etat = () => lire<InfoEtat>("/v1/status");
 
-/** Etat de l'API locale (GET /v1/api) : adresse, version, cle, routes, atelier. */
+/** Etat de l'API locale (GET /v1/api) : adresse, version, cle, routes, `/v1`. */
 export interface InfoApi {
   ok?: boolean;
   actif: boolean;
@@ -115,16 +115,17 @@ export interface InfoApi {
   build?: string;
   cle_requise?: boolean;
   routes?: string[];
-  atelier?: { disponible: boolean; actif?: boolean; serveur?: string; erreur?: string };
+  /** Racine a donner aux clients OpenAI (Open WebUI, editeurs). */
+  openai?: string;
   erreur?: string;
 }
 
 /**
  * `/api` du TUI. Contrairement a `lire`, garde le corps meme sur une erreur
- * HTTP (501 « atelier non finalise », 503…) : l'utilisateur lit la RAISON,
- * pas un « API injoignable » trompeur. `null` = vraiment injoignable.
+ * HTTP (503…) : l'utilisateur lit la RAISON, pas un « API injoignable »
+ * trompeur. `null` = vraiment injoignable.
  */
-export async function api(func: "status" | "disable" | "deploy"): Promise<InfoApi | null> {
+export async function api(func: "status"): Promise<InfoApi | null> {
   const chemin = func === "status" ? "/v1/api" : `/v1/api/${func}`;
   try {
     const r = await fetch(`${BASE}${chemin}`, {

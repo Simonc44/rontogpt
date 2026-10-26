@@ -44,7 +44,7 @@ from pathlib import Path
 RACINE = Path(__file__).resolve().parent.parent
 
 #: Points d'entree du PRODUIT (noms de modules, relatifs au paquet).
-ENTREES = ("__init__", "__main__", "api", "tui", "gui",
+ENTREES = ("__init__", "__main__", "api", "tui",
            "superviseur", "winmain", "kernel", "coucou")
 
 #: Un fichier de cache : `.cache_xxx.jsonl`, `.graphe_faits.jsonl`, etc.

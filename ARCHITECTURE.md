@@ -761,9 +761,9 @@ variables d'environnement, fichiers ouverts) n'est plus partage du tout.
 
 **72 %** de bout en bout, branches comprises (9527 instructions, `aura/` +
 `rontogpt/`) : `orchestrateur` 93 %, `filtre_instantane` 87 %, `potcode` 84 %,
-`config` 76 %, `llama_cerveau` 70 %, `api` 58 %, `kernel` 58 % — et `gui.py`
-à **0 %**, ce qui est le juste résultat : il ne s'importe que devant une
-fenêtre.
+`config` 76 %, `llama_cerveau` 70 %, `api` 58 %, `kernel` 58 %. `gui.py` était
+à **0 %** : il ne s'importait que devant une fenêtre — il a depuis été retiré
+(le TUI est l'interface, et lui s'importe et se teste sans écran).
 
 Ce que la mesure dit, et qu'aucun badge ne dira à notre place :
 
@@ -930,9 +930,9 @@ résultat n'était pas dans une dépendance : il était dans `aura/api.py`.
 |---|---|---|
 | Clé **optionnelle** (`not attendue or ...`) et `--host 0.0.0.0` accepté | Un `--host 0.0.0.0` sur un Wi-Fi public donnait `/v1/ask`, `/v1/learn`, `/v1/memoire`, `/v1/cloud` à n'importe qui | Refus **au démarrage** hors loopback sans `AURA_API_CLE` ≥ 16 caractères — vérifié : code 2, port fermé |
 | `/v1/config` servait `config.efficace()` **sans masque** | `AURA_GEMINI_API_KEY` et `AURA_API_CLE` en clair à tout appelant | `efficace(masquer=True)` : les variables dont le nom porte `CLE`/`KEY`/`TOKEN`/… valent `***` (motif ancré sur `_`, donc `AURA_GEMINI_MAX_TOKENS` reste lisible) |
-| Routes qui **modifient** l'état joignables à distance | `/v1/cloud` écrit la clé Gemini dans `.env` ; `/v1/documents` indexe un fichier arbitraire ; `/v1/api/*` démarre/arrête l'atelier | `403` hors loopback, **même avec la bonne clé** : une clé peut fuiter, pas l'adresse source |
+| Routes qui **modifient** l'état joignables à distance | `/v1/cloud` écrit la clé Gemini dans `.env` ; `/v1/documents` indexe un fichier arbitraire | `403` hors loopback, **même avec la bonne clé** : une clé peut fuiter, pas l'adresse source |
 | Clé comparée par `==` | Le temps de réponse dit combien de caractères sont justes | `hmac.compare_digest` |
-| L'atelier acceptait `--cle` sans **jamais** la vérifier | Le port parlait au cerveau sans authentification | Même contrôle que l'API, sur `/status` et `/v1/*` (seul `/health` reste ouvert pour la vivacité) |
+| L'atelier OpenAI acceptait `--cle` sans **jamais** la vérifier | Le port parlait au cerveau sans authentification | **Supprimé** — ses routes rendaient un texte de remplacement, pas une réponse. Le protocole OpenAI est servi par `aura/api.py` (`/v1/models`, `/v1/chat/completions`), avec la même clé que le reste : `X-RontoGPT-Cle` **ou** `Authorization: Bearer` |
 
 Vérifié sur une vraie socket, pas seulement en test unitaire : avec la clé,
 `/v1/config` rend `AURA_API_CLE = ***` ; `/v1/documents` répond **200** depuis
@@ -952,8 +952,9 @@ Vérifié sur une vraie socket, pas seulement en test unitaire : avec la clé,
 
 **Couverture** : `contexte.py` (le module qui décide ce qu'on oublie) passe de
 32 % à une couverture de ses règles — estimation, saturation, groupes, sélection
-par importance et par récence, compaction minimale ; `gui.py` gagne `_envelopper`
-(le seul code testable sans écran), le reste reste à 0 % et l'assume.
+par importance et par récence, compaction minimale. La GUI Tk (`gui.py`,
+`tests/test_gui_texte.py`) est **supprimée** : le TUI couvre l'interface, et un
+écran qui ne s'importe pas sans fenêtre ne se vérifie pas en CI.
 
 **Ce qui reste ouvert, écrit quand même** : la sandbox `potcode` est désormais
 un processus séparé, borné en mémoire et en temps — mais **pas** un bac à sable

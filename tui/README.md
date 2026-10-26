@@ -34,7 +34,7 @@ L'écran reprend la mise en page de l'interface Codex, avec l'emblème RontoGPT 
   grammaire quand elle est embarquee ; la ligne finale `Sources : [titre](url)`
   devient une section `🔗 Sources` — un titre et son lien par source. Un bloc
   jamais referme (le 1B recopie parfois l'echafaudage de sa consigne) est cadre
-  quand meme : c'est la seule regle que le TUI ajoute a `aura/gui.py`.
+  quand meme : c'est la seule regle d'affichage que le TUI s'ajoute.
 
 Format de `src/logo.ts` : une ligne de texte par rangée, chaque cellule braille
 vaut 2x4 points, et les cases vides sont de vrais espaces (pas U+2800).

@@ -87,6 +87,9 @@ _config.appliquer()
 
 LOG = logging.getLogger("aura.api")
 
+#: Nom expose aux clients OpenAI (`GET /v1/models`, champ `model`).
+MODELE_OPENAI = "rontogpt-local"
+
 _LOG_COURT = 60_000          # corps de requete acceptes (60 Ko)
 
 
@@ -163,6 +166,7 @@ _ROUTES_PUBLIQUES = (
     "GET  /v1/langue      langue de reponse active",
     "GET  /v1/maj         mise a jour disponible (GitHub Releases, local)",
     "GET  /v1/cloud       etat de Gemini",
+    "GET  /v1/models      modeles exposes (compatibilite OpenAI)",
     "POST /v1/ask         question -> reponse + preuve",
     "POST /v1/ask/stream  meme chose, en flux (pensee puis reponse)",
     "POST /v1/ask/cloud   envoi explicite a Gemini (confirme: true)",
@@ -171,18 +175,8 @@ _ROUTES_PUBLIQUES = (
     "POST /v1/memoire     editer un fait memorise (set/delete)",
     "POST /v1/documents   ajouter ou retirer un document local",
     "POST /v1/langue      choisir fr, en ou auto",
-    "POST /v1/chat/completions  compatibilite OpenAI locale",
+    "POST /v1/chat/completions  compatibilite OpenAI locale (flux compris)",
 )
-
-
-def _etat_atelier() -> dict:
-    """Etat de l'atelier OpenAI, sans jamais lever (module optionnel)."""
-    try:
-        from . import openai_atelier as oa
-        return {"disponible": True, "actif": bool(oa.etat.actif),
-                "serveur": oa.etat.serveur_url}
-    except Exception as e:                           # noqa: BLE001
-        return {"disponible": False, "erreur": str(e)}
 
 
 def _reponse_detaille(ia, question: str) -> dict:
@@ -261,8 +255,7 @@ _CLE_MINIMUM = 16
 #: peut fuiter (capture d'ecran, journal, `.env` copie), pas l'adresse source
 #: de la requete.
 _ROUTES_LOCALES = frozenset({
-    "/v1/cloud", "/v1/learn", "/v1/documents", "/v1/maj",
-    "/v1/api", "/v1/api/disable", "/v1/api/deploy",
+    "/v1/cloud", "/v1/learn", "/v1/documents", "/v1/maj", "/v1/api",
 })
 
 
@@ -308,6 +301,13 @@ def _verifier_cle(entetes) -> bool:
         return True          # pas de cle configuree : le loopback est la garde
     fournie = str(entetes.get("X-RontoGPT-Cle")
                   or entetes.get("X-Aura-Cle") or "")
+    if not fournie:
+        # UN CLIENT OPENAI N'ENVOIE QUE `Authorization: Bearer <cle>` (Open
+        # WebUI, editeurs, SDK) : sans ce cas, une API protegee par cle
+        # refusait tous les outils qu'elle est censee accepter.
+        entete = str(entetes.get("Authorization") or "")
+        if entete[:7].lower() == "bearer ":
+            fournie = entete[7:].strip()
     # Comparaison en TEMPS CONSTANT : `==` sort au premier caractere faux, et
     # le temps de reponse dit alors combien de caracteres sont justes.
     return hmac.compare_digest(fournie, attendue)
@@ -356,10 +356,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/v1/api":
             return self._api_status()
-        if self.path == "/v1/api/disable":
-            return self._api_desactiver()
-        if self.path == "/v1/api/deploy":
-            return self._api_deployer()
+        if self.path in ("/v1/models", "/v1/models/"):
+            return self._models()
         if self.path == "/v1/health":
             return self._json({"status": "ok",
                                "version": _config.version(),
@@ -442,8 +440,9 @@ class _Handler(BaseHTTPRequestHandler):
         """Etat de l'API locale (`/api` du TUI) : adresse, version, cle, routes.
 
         Toujours REELLE : elle decrit CE serveur (celui qui repond), pas un
-        serveur annexe. L'etat de l'atelier OpenAI (`aura/openai_atelier.py`)
-        est ajoute a part, et son absence ne fait jamais echouer la route.
+        serveur annexe — l'atelier OpenAI factice a ete retire, et c'est ce
+        serveur-ci qui parle le dialecte OpenAI (`/v1/models`,
+        `/v1/chat/completions`).
         """
         # `socketserver` type `server_address` en `tuple | str | Buffer` : ce
         # serveur est TOUJOURS un socket AF_INET, donc toujours un couple
@@ -458,29 +457,21 @@ class _Handler(BaseHTTPRequestHandler):
             "build": _BUILD_DEMARRAGE,
             "cle_requise": bool(os.environ.get("AURA_API_CLE")),
             "routes": list(_ROUTES_PUBLIQUES),
-            "atelier": _etat_atelier(),
+            "openai": f"http://{hote}:{port}/v1",
         })
 
-    def _api_desactiver(self) -> None:
-        """Arrete l'atelier OpenAI s'il tourne ; sinon le dit sans planter."""
-        try:
-            from . import openai_atelier as oa
-            oa.arreter_serveur()
-        except Exception as e:                       # noqa: BLE001
-            return self._json({"ok": False, "erreur": str(e)}, 503)
-        return self._api_status()
+    def _models(self) -> None:
+        """`GET /v1/models` : la liste que tout client OpenAI demande d'abord.
 
-    def _api_deployer(self) -> None:
-        """Refuse de lancer l'atelier tant que ses routes sont factices.
-
-        `openai_atelier.create_app` repond par un TEXTE DE REMPLISSAGE (« reponse
-        de l'atelier — delegation non implementee ») : le presenter comme un
-        serveur RontoGPT ferait croire a une vraie reponse.
+        Un seul modele, et c'est la verite : le cerveau local. Le nom est
+        stable pour que les clients gardent leur choix d'un demarrage a
+        l'autre ; la famille lue dans le GGUF serait un detail mouvant.
         """
-        return self._json(
-            {"ok": False,
-             "erreur": "atelier OpenAI non finalise : ses routes renvoient un "
-                       "texte factice, pas la reponse du cerveau"}, 501)
+        return self._json({
+            "object": "list",
+            "data": [{"id": MODELE_OPENAI, "object": "model",
+                      "created": 0, "owned_by": "rontogpt"}],
+        })
 
     def _feedback(self) -> None:
         """Vote utilisateur (pouce haut/bas) : consigne seulement, sans effet
@@ -574,11 +565,13 @@ class _Handler(BaseHTTPRequestHandler):
         return self._json({"ok": True, "langue": langue})
 
     def _chat_completions(self) -> None:
-        """Adaptateur OpenAI minimal, reel et sans FastAPI.
+        """Adaptateur OpenAI, reel et sans FastAPI — flux compris.
 
-        Il est volontairement non-streaming : les clients OpenAI usuels
-        (editeurs, Open WebUI) peuvent deja converser avec le cerveau unique,
-        sans lancer l'ancien atelier factice.
+        Le dernier message `user` part dans `executer_detaille` : meme cerveau,
+        memes experts, meme provenance que `/v1/ask`. `stream: true` rend des
+        `chat.completion.chunk` puis `[DONE]`, ce que lisent Open WebUI, les
+        editeurs et le SDK `openai`. Seule la PHASE REPONSE part comme
+        contenu : la reflexion du modele n'est pas une reponse.
         """
         corps = self._corps()
         messages = corps.get("messages")
@@ -589,11 +582,11 @@ class _Handler(BaseHTTPRequestHandler):
                          and m.get("role") == "user"), "")
         if not question:
             return self._json({"error": {"message": "message utilisateur requis"}}, 400)
-        if corps.get("stream") is True:
-            return self._json({"error": {"message": "stream non pris en charge ; utilisez /v1/ask/stream"}}, 400)
         ia = self.etat.ia or self.etat.charger()
         if ia is None:
             return self._json({"error": {"message": self.etat.erreur or "IA non chargee"}}, 503)
+        if corps.get("stream") is True:
+            return self._chat_stream(corps, question, ia)
         try:
             r = _reponse_detaille(ia, question)
         except Exception as e:  # noqa: BLE001
@@ -601,11 +594,74 @@ class _Handler(BaseHTTPRequestHandler):
         return self._json({
             "id": f"chatcmpl-ronto-{int(time.time() * 1000)}",
             "object": "chat.completion", "created": int(time.time()),
-            "model": str(corps.get("model") or "rontogpt-local"),
+            "model": str(corps.get("model") or MODELE_OPENAI),
             "choices": [{"index": 0, "finish_reason": "stop",
                          "message": {"role": "assistant", "content": r["reponse"]}}],
             "rontogpt": {"provenance": r.get("provenance"), "latence": r["latence"]},
         })
+
+    def _chat_stream(self, corps: dict, question: str, ia) -> None:
+        """Le meme tour, en `chat.completion.chunk` (+ `[DONE]`).
+
+        Un seul flux a la fois (`_FLUX_LIBRE`), comme `/v1/ask/stream` : le
+        cerveau ne genere qu'une reponse a la fois, et deux flux simultanes se
+        melangeraient dans le bus.
+        """
+        if not _FLUX_LIBRE.acquire(blocking=False):
+            return self._json(
+                {"error": {"message": "un flux est deja en cours — reessaie"}},
+                409)
+        from . import llama_cerveau
+
+        identifiant = f"chatcmpl-ronto-{int(time.time() * 1000)}"
+        cree = int(time.time())
+        modele = str(corps.get("model") or MODELE_OPENAI)
+
+        def trame(delta: dict, fin: str | None = None) -> dict:
+            return {"id": identifiant, "object": "chat.completion.chunk",
+                    "created": cree, "model": modele,
+                    "choices": [{"index": 0, "delta": delta,
+                                 "finish_reason": fin}]}
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self._sse(trame({"role": "assistant"}))     # la 1re trame annonce le role
+        vus: list[str] = []
+
+        def morceau(texte: str, phase: str) -> None:   # noqa: ARG001
+            vus.append(texte)
+            self._sse(trame({"content": texte}))
+
+        desabonner = llama_cerveau.abonner_flux_phase(
+            morceau, phases=(llama_cerveau.PHASE_REPONSE,))
+        try:
+            r = _reponse_detaille(ia, question)
+            # TOUT CE QUI N'A PAS ETE FLUXE DOIT PARTIR QUAND MEME. Un tour
+            # deterministe (calcul exact, filtre instantane) ne publie aucun
+            # morceau : sans ce reste, un client OpenAI recevait un message
+            # VIDE pour les meilleures reponses du produit. Mesure : « 17 x
+            # 23 » rendait `role`, `stop`, `[DONE]` et rien d'autre.
+            complet = str(r.get("reponse") or "")
+            deja = "".join(vus)
+            reste = complet[len(deja):] if complet.startswith(deja) else ""
+            if reste:
+                self._sse(trame({"content": reste}))
+            self._sse({**trame({}, "stop"),
+                       "rontogpt": {"provenance": r.get("provenance"),
+                                    "latence": r["latence"]}})
+        except Exception as e:                       # noqa: BLE001
+            self._sse({"error": {"message": str(e)}})
+        finally:
+            desabonner()
+            _FLUX_LIBRE.release()
+            try:
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
 
     def _ask_cloud(self) -> None:
         """Envoi EXPLICITE d'une question a Gemini : le client l'a demande.

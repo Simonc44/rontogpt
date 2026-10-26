@@ -1,8 +1,8 @@
 # Surface du paquet `aura`
 
-82 modules : 74 ATTEIGNABLE, 4 SCRIPTS, 3 TESTS, 1 ORPHELIN.
+80 modules : 72 ATTEIGNABLE, 4 SCRIPTS, 3 TESTS, 1 ORPHELIN.
 
-Points d'entree suivis : __init__, __main__, api, coucou, gui, kernel, superviseur, tui, winmain.
+Points d'entree suivis : __init__, __main__, api, coucou, kernel, superviseur, tui, winmain.
 
 ## Orphelins (1) : personne ne les importe : archivables
 

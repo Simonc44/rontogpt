@@ -21,10 +21,8 @@
  *     « Arrêter ■ » pendant une réponse : même place, même geste) ;
  *   - tout le reste est caché : `/help` liste les commandes, `Échap`
  *     interrompt, `/commande` ouvre les actions secondaires.
- *   (Le badge de preuve et le « Demander à Gemini » du backend ne sont pas
- *   affichés dans cet écran : `provenance` et `repli_propose` arrivent déjà
- *   dans l'événement `final`, mais le TUI ne garde la ligne de méta que pour
- *   les échecs et les interruptions.)
+ *   (Le badge de preuve — une ligne sous chaque réponse — est affiché ;
+ *   le « Demander à Gemini » (`repli_propose`) n'est pas encore branché.)
  */
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -547,11 +545,17 @@ async function envoyer(question: string): Promise<string> {
         }
         poser(affiche, { couleur });
         if (modePlan && e.ok) enregistrerPlan(affiche);
-        // PAS de bandeau de provenance sous la réponse : « Base vérifiée ·
-        // verified · base de faits locale relue » est une méta que le backend
-        // fournit (`e.provenance`) mais qui n'apprend rien sous une réponse
-        // ordinaire, et qui coupait le fil par un trait pleine largeur à
-        // chaque tour. La méta reste réservée aux ÉCHECS et interruptions.
+        // BADGE de preuve : UNE ligne courte, sans trait pleine largeur —
+        // c'est la promesse du produit (« prouve ses réponses »). Vert =
+        // vérifié, discret = modèle local non vérifié, orange = « je ne sais
+        // pas » ou question envoyée à Gemini.
+        const pv = e.provenance;
+        if (pv && e.ok) {
+          const signe = pv.verifie ? "✓" : pv.niveau === "inconnu" ? "?" : "•";
+          const ton = pv.verifie ? TH.ok
+            : (pv.niveau === "inconnu" || pv.quitte_la_machine) ? TH.alerte : TH.discret;
+          poserMeta(`${signe} ${pv.badge} — ${pv.detail}`, ton);
+        }
         if (e.contexte?.sature) note(phraseContexte(e.contexte), TH.alerte);
         if (!e.ok && e.erreur) note(`Le cerveau signale : ${e.erreur}`, TH.erreur);
         direLocalement(affiche);
@@ -973,23 +977,9 @@ async function afficherContexte(): Promise<void> {
 /** `/api` : l'API locale (adresse, version, clé, routes) — `argument` suit le mot. */
 async function traiterApi(argument: string): Promise<void> {
   const mot = argument.split(/\s+/)[0]?.toLowerCase() ?? "";
-  if (mot === "stop" || mot === "arreter" || mot === "disable") {
-    const r = await api("disable");
-    if (r === null) {
-      note(`API unreachable on ${BASE}`, TH.erreur);
-      return;
-    }
-    note(r.ok === false ? `Workshop server: ${r.erreur ?? "could not stop"}` : "Workshop server stopped.",
-         r.ok === false ? TH.alerte : TH.doux);
-    return;
-  }
-  if (mot === "start" || mot === "demarrer" || mot === "deploy") {
-    const r = await api("deploy");
-    note(r === null ? `API unreachable on ${BASE}` : `Workshop server: ${r.erreur ?? "not available"}`,
-         r === null ? TH.erreur : TH.alerte);
-    return;
-  }
   if (mot !== "") {
+    // L'atelier OpenAI factice est retire : il n'y a plus de serveur annexe a
+    // demarrer ni a arreter. C'est CETTE API qui parle le protocole OpenAI.
     note("Unknown /api option. Run /api for the address and routes.", TH.alerte);
     return;
   }
@@ -1002,17 +992,14 @@ async function traiterApi(argument: string): Promise<void> {
     note(`API error: ${i.erreur ?? "unknown"}`, TH.erreur);
     return;
   }
-  const atelier = i.atelier;
   note([
     "Local API",
     `  address   ${i.serveur}`,
+    `  openai    ${i.openai ?? `${i.serveur}/v1`}   (Open WebUI, editors)`,
     `  version   ${i.version}${i.build ? ` (build ${i.build})` : ""}`,
-    `  key       ${i.cle_requise ? "required (X-RontoGPT-Cle header)" : "none — local only (127.0.0.1)"}`,
-    atelier
-      ? `  workshop  ${atelier.disponible
-          ? (atelier.actif ? `running on ${atelier.serveur}` : "stopped")
-          : `unavailable (${atelier.erreur ?? "module missing"})`}`
-      : "",
+    `  key       ${i.cle_requise
+        ? "required (X-RontoGPT-Cle or Authorization: Bearer)"
+        : "none — local only (127.0.0.1)"}`,
     "",
     ...(i.routes ?? []).map((r) => `  ${r}`),
   ].filter((l, k, tout) => l !== "" || tout[k - 1] !== "").join("\n"), TH.doux);

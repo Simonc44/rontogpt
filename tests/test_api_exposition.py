@@ -5,9 +5,12 @@ Ce qui est verrouille ici :
 - ecouter hors loopback sans cle est un REFUS au demarrage (pas un message) ;
 - les routes qui modifient un etat durable ne repondent qu'a 127.0.0.1,
   meme avec une cle valide ;
-- la cle se compare en temps constant, par les deux entetes acceptes ;
-- `/v1/config` ne livre plus la valeur des variables qui portent un secret ;
-- l'atelier OpenAI verifie enfin la cle qu'il acceptait sans la regarder.
+- la cle se compare en temps constant, par les deux entetes acceptes
+  (`X-RontoGPT-Cle` et `Authorization: Bearer`, cf. test_api_openai.py) ;
+- `/v1/config` ne livre plus la valeur des variables qui portent un secret.
+
+L'atelier OpenAI factice a ete retire : c'est CE serveur qui parle le
+protocole OpenAI, et ses routes sont testees dans `test_api_openai.py`.
 """
 from pathlib import Path
 
@@ -85,8 +88,7 @@ class TestCle:
 
 class TestRoutesLocales:
     @pytest.mark.parametrize("chemin", [
-        "/v1/cloud", "/v1/learn", "/v1/documents", "/v1/maj",
-        "/v1/api", "/v1/api/deploy", "/v1/api/disable",
+        "/v1/cloud", "/v1/learn", "/v1/documents", "/v1/maj", "/v1/api",
         "/v1/cloud?actif=1",
     ])
     def test_reservees_a_la_machine(self, chemin):
@@ -121,74 +123,6 @@ class TestMasquage:
         """`efficace()` seule ne suffit pas : c'est l'APPEL qui doit masquer."""
         source = (RACINE / "aura" / "api.py").read_text(encoding="utf-8")
         assert "efficace(masquer=True)" in source
-
-
-class TestAtelier:
-    def _client(self, monkeypatch, cle=None):
-        from aura import openai_atelier as oa
-        if cle is None:
-            monkeypatch.delenv(oa.API_KEY_ENV, raising=False)
-        else:
-            monkeypatch.setenv(oa.API_KEY_ENV, cle)
-        from fastapi.testclient import TestClient
-        return oa, TestClient(oa.create_app())
-
-    def test_la_cle_est_enfin_verifiee(self, monkeypatch):
-        oa, client = self._client(monkeypatch, CLE)
-        assert client.get("/health").status_code == 200      # vivacite : ouverte
-        assert client.get("/status").status_code == 401
-        assert client.post("/v1/ask", json={"question": "x"}).status_code == 401
-        assert client.post("/v1/ask/stream",
-                           json={"question": "x"}).status_code == 401
-        entete = {"X-RontoGPT-Cle": CLE}
-        assert client.get("/status", headers=entete).status_code == 200
-        assert client.post("/v1/ask", json={"question": "x"},
-                           headers=entete).status_code == 200
-
-    def test_sans_cle_configuree_l_atelier_repond(self, monkeypatch):
-        _oa, client = self._client(monkeypatch)
-        assert client.get("/status").status_code == 200
-
-    def test_demarrage_distant_sans_cle_refuse(self, monkeypatch):
-        from aura import openai_atelier as oa
-        monkeypatch.delenv(oa.API_KEY_ENV, raising=False)
-        with pytest.raises(ValueError, match="AURA_API_CLE"):
-            oa.demarrer_serveur(host="0.0.0.0", port=0)
-
-
-class TestArretAtelier:
-    """`arreter_serveur` demandait l'arret sans jamais l'obtenir."""
-
-    def test_arreter_stoppe_uvicorn_et_ne_bascule_pas(self, monkeypatch):
-        from aura import openai_atelier as oa
-
-        class FauxServeur:
-            should_exit = False
-
-        class FauxFil:
-            def __init__(self):
-                self.timeout = None
-                self.joint = False
-
-            def is_alive(self):
-                return True
-
-            def join(self, timeout=None):
-                self.timeout = timeout
-                self.joint = True
-
-        serveur, fil = FauxServeur(), FauxFil()
-        monkeypatch.setattr(oa, "_SERVEUR", serveur)
-        monkeypatch.setattr(oa.etat, "server_thread", fil)
-        monkeypatch.setattr(oa.etat, "actif", True)
-
-        etat = oa.arreter_serveur()
-
-        assert serveur.should_exit is True, "uvicorn doit recevoir l'ordre"
-        assert fil.joint and fil.timeout == 5.0
-        assert etat["actif"] is False
-        assert oa.etat.actif is False, "basculer() inversait le drapeau"
-        assert oa._SERVEUR is None
 
 
 class TestRouteMaj:
