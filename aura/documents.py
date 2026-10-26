@@ -44,6 +44,11 @@ RACINE = Path(__file__).resolve().parent.parent
 DOSSIER = Path(os.environ.get("AURA_DOCS_DIR") or (RACINE / ".cache_docs"))
 
 EXTENSIONS = {".txt", ".md", ".markdown", ".pdf"}
+#: Plafond de taille pour un document ajoute PAR L'API. Un fichier de 50 Mo
+#: indexe a la demande d'un client est un deni de service, pas un document.
+TAILLE_MAX_API = 20 * 1024 * 1024
+#: Nombre maximal de chemins acceptes dans une seule requete d'ajout.
+MAX_API = 20
 TAILLE_MORCEAU = 700          # caracteres par passage (~180 tokens)
 CHEVAUCHEMENT = 120
 SEUIL_COSINUS = 0.28
@@ -249,6 +254,54 @@ def _ecrire(docs: list[dict], vecs: np.ndarray | None) -> None:
     elif vecteurs.is_file():
         vecteurs.unlink()
     _vider_cache()
+
+
+def racines_autorisees() -> tuple[Path, ...]:
+    """Dossiers ou l'API accepte de lire un document.
+
+    Par defaut le dossier de l'utilisateur. `AURA_DOCS_RACINES` (chemins
+    separes par `os.pathsep`) les REMPLACE : un disque de travail se declare
+    explicitement, il ne s'obtient pas en elargissant la racine a `/`.
+    """
+    brut = os.environ.get("AURA_DOCS_RACINES", "")
+    if brut.strip():
+        return tuple(Path(p).expanduser().resolve()
+                     for p in brut.split(os.pathsep) if p.strip())
+    return (Path.home().resolve(),)
+
+
+def verifier_acces(chemin: str | Path) -> Path:
+    """Valide un chemin VENU DE L'API avant de le lire.
+
+    Le CLI (`python -m aura.documents add`) garde le droit de lire n'importe
+    quel fichier : c'est l'utilisateur qui tape le chemin. Ici le chemin
+    vient du reseau, donc il est borne : extension lue, aucun composant
+    cache (`.ssh`, `.env`, `.git`), racines autorisees, et `resolve()` AVANT
+    la comparaison pour qu'un lien symbolique ne serve pas de porte de sortie.
+    """
+    p = Path(chemin).expanduser()
+    if p.suffix.lower() not in EXTENSIONS:
+        raise PermissionError(
+            f"extension non acceptee : {p.suffix or '(aucune)'} "
+            f"(attendu {', '.join(sorted(EXTENSIONS))})")
+    masques = [part for part in p.parts
+               if part.startswith(".") and part not in (".", "..")]
+    if masques:
+        raise PermissionError(f"chemin cache refuse : {masques[0]}")
+    resolu = p.resolve()
+    racines = racines_autorisees()
+    if not any(resolu == r or r in resolu.parents for r in racines):
+        raise PermissionError(
+            f"{resolu} est hors des racines autorisees "
+            f"({', '.join(str(r) for r in racines)}) ; les elargir se fait "
+            "par AURA_DOCS_RACINES")
+    if not resolu.is_file():
+        raise PermissionError(f"{resolu} n'est pas un fichier")
+    taille = resolu.stat().st_size
+    if taille > TAILLE_MAX_API:
+        raise PermissionError(
+            f"{resolu.name} fait {taille} octets (plafond {TAILLE_MAX_API})")
+    return resolu
 
 
 def ajouter(chemin: str | Path) -> dict:

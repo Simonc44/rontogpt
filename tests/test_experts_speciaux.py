@@ -222,3 +222,36 @@ class TestRoutageSpeciaux:
     def test_question_normale_ne_declenche_rien(self):
         assert RontoGPT()._expert_special(
             "capitale de l australie", None, None) is None
+class TestSandboxEvasions:
+    """`().__class__.__bases__[0]` ne demande aucun builtin : la barriere
+    doit etre dans l'ARBRE, pas dans la liste des builtins autorises."""
+
+    @pytest.mark.parametrize("code", [
+        "\n".join(["def resoudre(d):",
+                    "    return ().__class__.__bases__[0].__subclasses__()",
+                    "assert resoudre([])"]),
+        "\n".join(["def resoudre(d):",
+                    "    return ''.__class__.__mro__",
+                    "assert resoudre('')"]),
+        "\n".join(["def resoudre(d):",
+                    "    return __import__('os')",
+                    "assert resoudre(1)"]),
+        "\n".join(["def resoudre(d):",
+                    "    return '{0.__class__}'.format(())",
+                    "assert resoudre(1)"]),
+        "\n".join(["import os",
+                    "def resoudre(d):",
+                    "    return d",
+                    "assert resoudre(1)"]),
+    ])
+    def test_evasion_refusee(self, code):
+        with pytest.raises(ValueError):
+            potcode.verifier_code(code)
+
+    def test_le_code_ordinaire_passe_toujours(self):
+        code = "\n".join([
+            "def resoudre(d):",
+            "    return sorted(x * 2 for x in d if x > 0)",
+            "assert resoudre([1, -2, 3]) == [2, 6]",
+        ])
+        assert potcode.verifier_code(code)["statut"] == "valide"

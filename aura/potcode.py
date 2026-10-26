@@ -6,12 +6,17 @@ BLOC. La sandbox execute tout : un assert qui echoue = code refuse — le
 code rate ne sort JAMAIS, le pipeline retombe sur la generation normale.
 
 Securite (honnete) :
-- builtins restrictifs : pas d'import, pas d'open/eval/exec/compile/getattr,
-  pas d'acces aux attributs doubles (obj.__class__) ;
+- builtins restrictifs : pas d'import, pas d'open/eval/exec/compile/getattr ;
+- **barriere AST** : tout nom ou attribut dunder (`__class__`,
+  `__bases__`, `__globals__`...) est refuse AVANT l'execution. Les builtins
+  seuls ne suffisaient pas : `().__class__.__bases__[0].__subclasses__()`
+  n'en utilise aucun. Le docstring promettait cette barriere, le code ne
+  l'avait pas — c'est desormais vrai, et teste par les evasions connues ;
 - budget d'instructions par sys.settrace : toute boucle infinie est coupee
   (kill-switch garanti, pas un simple timeout de thread) ;
 - extrait UNIQUEMENT du code entre balises ```python ... ``` ou ``` ... ```.
 """
+import ast
 import logging
 import re
 import sys
@@ -68,6 +73,37 @@ class _BudgetEpuise(Exception):
     pass
 
 
+def _refuser_evasions(arbre: ast.AST) -> None:
+    """Refuse les constructions qui menent hors de la sandbox, AVANT `exec`.
+
+    Les builtins restreints ne suffisent pas : `().__class__.__bases__[0]`
+    n'appelle aucun builtin et donne acces a `object`, puis a toutes les
+    sous-classes chargees — donc a `os` et a `system`. On refuse donc, dans
+    l'ARBRE :
+
+    - tout attribut dunder (`obj.__class__`, `f.__globals__`...) ;
+    - tout nom dunder (sauf ce que l'interpreteur ajoute lui-meme, qu'on ne
+      peut pas ecrire : `__name__` est donc interdit aussi) ;
+    - `import` / `from ... import` (l'import d'un module atteint le systeme) ;
+    - une chaine qui melange `{` et `__` : `"{0.__class__}".format(x)` fait
+      passer l'acces dunder par un FORMAT, pas par l'AST.
+    """
+    for noeud in ast.walk(arbre):
+        if isinstance(noeud, ast.Attribute) and noeud.attr.startswith("__"):
+            raise ValueError(f"evasion interdite : attribut {noeud.attr} "
+                             f"(ligne {noeud.lineno})")
+        if isinstance(noeud, ast.Name) and noeud.id.startswith("__"):
+            raise ValueError(f"evasion interdite : nom {noeud.id} "
+                             f"(ligne {noeud.lineno})")
+        if isinstance(noeud, (ast.Import, ast.ImportFrom)):
+            raise ValueError(f"import interdit dans la sandbox "
+                             f"(ligne {noeud.lineno})")
+        if (isinstance(noeud, ast.Constant) and isinstance(noeud.value, str)
+                and "__" in noeud.value and "{" in noeud.value):
+            raise ValueError("evasion interdite : acces dunder dans une "
+                             f"chaine de formatage (ligne {noeud.lineno})")
+
+
 def _executer_sandbox(code: str,
                       budget: int = _BUDGET_INSTRUCTIONS) -> dict:
     """Compile et execute le code (definition + asserts) dans la sandbox.
@@ -76,9 +112,14 @@ def _executer_sandbox(code: str,
     refuse : syntaxe, instruction illicite, budget depasse, assert rate.
     """
     try:
-        arbre = compile(code, "<aura-sandbox>", "exec")
+        # `ast.parse` d'abord : la barriere inspecte l'ARBRE. `compile()` rend
+        # un objet code (pas un AST), et `ast.walk` y voit des `node._fields`
+        # inexistants — l'erreur que ce detour a deja produite.
+        syntaxe = ast.parse(code, filename="<aura-sandbox>", mode="exec")
+        arbre = compile(syntaxe, "<aura-sandbox>", "exec")
     except SyntaxError as e:
         raise ValueError(f"syntaxe invalide : {e}") from e
+    _refuser_evasions(syntaxe)
 
     env: dict = {"__builtins__": dict(_SANDBOX_BUILTINS)}
     compteur = {"n": 0}

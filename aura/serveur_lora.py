@@ -45,6 +45,12 @@ _IDS = {"math": 0, "web": 1, "code": 2, "general": 3}
 
 _ADRESSE = os.environ.get("AURA_SERVEUR_ADRESSE", "127.0.0.1:8757")
 
+#: Jeton exige par llama-server des que l'adresse n'est plus la machine.
+#: `llama-server` n'a AUCUNE authentification par defaut : `--api-key` est la
+#: seule barriere, et elle doit etre posee AVANT d'ecouter sur le reseau.
+_CLE_SERVEUR = "AURA_SERVEUR_CLE"
+_CLE_MINIMUM = 16
+
 _process: subprocess.Popen | None = None
 _actif: tuple | None = None        # mix actuellement applique ((cat, scale)...)
 _indispo: str | None = None        # raison d'une indisponibilite (log 1 fois)
@@ -99,14 +105,53 @@ def _port() -> int:
     return int(_ADRESSE.rsplit(":", 1)[1])
 
 
+def _hote() -> str:
+    return _ADRESSE.rsplit(":", 1)[0]
+
+
 def _url(chemin: str) -> str:
     return f"http://{_ADRESSE}{chemin}"
+
+
+def _entetes() -> dict[str, str]:
+    """En-tetes des appels a llama-server : JSON, plus le jeton s'il existe.
+
+    Sans `Authorization: Bearer`, un serveur lance avec `--api-key` refuse
+    nos propres requetes : le jeton doit donc partir d'ici, pas seulement
+    de la ligne de commande du binaire.
+    """
+    entetes = {"Content-Type": "application/json"}
+    cle = os.environ.get(_CLE_SERVEUR, "").strip()
+    if cle:
+        entetes["Authorization"] = f"Bearer {cle}"
+    return entetes
+
+
+def _verifier_exposition() -> str | None:
+    """Message d'erreur si AURA_SERVEUR_ADRESSE expose llama-server sans jeton.
+
+    Meme regle que l'API HTTP (`aura.api._verifier_exposition`), et pour la
+    meme raison : une variable d'environnement suffisait a publier le modele
+    — et ses adaptateurs — a tout le reseau, sans mot de passe.
+    """
+    from .api import _est_local       # import LOCAL : api applique la config
+
+    if _est_local(_hote()):
+        return None
+    if len(os.environ.get(_CLE_SERVEUR, "").strip()) < _CLE_MINIMUM:
+        return (f"AURA_SERVEUR_ADRESSE={_ADRESSE} ecoute hors de la machine "
+                f"sans {_CLE_SERVEUR} d'au moins {_CLE_MINIMUM} caracteres : "
+                "llama-server n'a aucune authentification par defaut, le "
+                "modele serait ouvert a tout le reseau. Poser la cle, ou "
+                "revenir a 127.0.0.1.")
+    return None
 
 
 def _existe_serveur(timeout: float = 1.0) -> bool:
     """Un serveur repond deja sur le port ? (reuse si oui)"""
     try:
-        with urllib.request.urlopen(_url("/health"), timeout=timeout) as r:
+        req = urllib.request.Request(_url("/health"), headers=_entetes())
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode()).get("status") == "ok"
     except Exception:
         return False
@@ -120,7 +165,8 @@ def _modele_servi(timeout: float = 1.0) -> str | None:
     doit pouvoir ne rien conclure.
     """
     try:
-        with urllib.request.urlopen(_url("/v1/models"), timeout=timeout) as r:
+        req = urllib.request.Request(_url("/v1/models"), headers=_entetes())
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             charge = json.loads(r.read().decode())
     except Exception:
         return None
@@ -404,6 +450,13 @@ def _args_mlock(aide: str) -> list[str]:
 def _demarrer() -> bool:
     """Demarre le serveur avec le cerveau + les adaptateurs au boot."""
     global _process, _indispo
+    # PORTE 1 : pas d'ecoute reseau sans jeton. Le repli in-process est plus
+    # lent, mais il ne publie rien : c'est le bon compromis.
+    souci = _verifier_exposition()
+    if souci:
+        _indispo = souci
+        LOG.error("[serveur_lora] %s -> chemin in-process", souci)
+        return False
     bin_ = _binaire()
     gguf = _gguf_cerveau()
     if bin_ is None or gguf is None:
@@ -429,8 +482,21 @@ def _demarrer() -> bool:
         _threads_auto = max(os.cpu_count() or 4, 1)
     _threads = int(os.environ.get("AURA_SERVEUR_THREADS", _threads_auto))
     cmd = [str(bin_), "-m", str(gguf), "--port", str(_port()),
-           "--host", _ADRESSE.rsplit(":", 1)[0], "-c", str(_n_ctx()),
+           "--host", _hote(), "-c", str(_n_ctx()),
            "-t", str(_threads), "--no-warmup"]
+    # PORTE 2 : le jeton part au binaire quand il est configure. Si ce build
+    # de llama-server ne connait pas `--api-key`, ecouter sur le reseau
+    # serait une porte ouverte : on prefere renoncer au chemin serveur.
+    cle = os.environ.get(_CLE_SERVEUR, "").strip()
+    if cle:
+        if "--api-key" in _aide_binaire(bin_):
+            cmd += ["--api-key", cle]
+        else:
+            _indispo = ("ce llama-server ne connait pas --api-key : "
+                        f"impossible de poser {_CLE_SERVEUR} sur le chemin "
+                        "serveur -> chemin in-process")
+            LOG.error("[serveur_lora] %s", _indispo)
+            return False
     LOG.info("[serveur_lora] threads : %d", _threads)
     if _spec_type_ok(bin_):
         # brouillon n-gram (cache) extrait de l'historique : +170 % sur du
@@ -685,8 +751,7 @@ def activer_mixte(poids: dict[str, float]) -> bool:
         try:
             req = urllib.request.Request(
                 _url("/lora-adapters"), method="POST",
-                data=json.dumps(corps).encode(),
-                headers={"Content-Type": "application/json"})
+                data=json.dumps(corps).encode(), headers=_entetes())
             with urllib.request.urlopen(req, timeout=10) as r:
                 ok = json.loads(r.read().decode()).get("success", False)
             if not ok:
@@ -763,8 +828,7 @@ def _poster(corps: dict) -> str | None:
     _oublier_timings()
     req = urllib.request.Request(
         _url("/v1/chat/completions"), method="POST",
-        data=json.dumps(corps).encode(),
-        headers={"Content-Type": "application/json"})
+        data=json.dumps(corps).encode(), headers=_entetes())
     with urllib.request.urlopen(req, timeout=300) as r:
         sortie = json.loads(r.read().decode())
     _memoriser_timings(sortie)
@@ -802,8 +866,7 @@ def _chat_stream(corps: dict, publier: Callable[[str], None],
     _oublier_timings()
     req = urllib.request.Request(
         _url("/v1/chat/completions"), method="POST",
-        data=json.dumps(corps).encode(),
-        headers={"Content-Type": "application/json"})
+        data=json.dumps(corps).encode(), headers=_entetes())
     morceaux: list[str] = []
     with urllib.request.urlopen(req, timeout=300) as r:
         for ligne in r:                       # SSE : "data: {json}\n\n"

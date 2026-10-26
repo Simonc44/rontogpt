@@ -85,7 +85,7 @@ class TestCle:
 
 class TestRoutesLocales:
     @pytest.mark.parametrize("chemin", [
-        "/v1/cloud", "/v1/learn", "/v1/documents",
+        "/v1/cloud", "/v1/learn", "/v1/documents", "/v1/maj",
         "/v1/api", "/v1/api/deploy", "/v1/api/disable",
         "/v1/cloud?actif=1",
     ])
@@ -154,3 +154,68 @@ class TestAtelier:
         monkeypatch.delenv(oa.API_KEY_ENV, raising=False)
         with pytest.raises(ValueError, match="AURA_API_CLE"):
             oa.demarrer_serveur(host="0.0.0.0", port=0)
+
+
+class TestArretAtelier:
+    """`arreter_serveur` demandait l'arret sans jamais l'obtenir."""
+
+    def test_arreter_stoppe_uvicorn_et_ne_bascule_pas(self, monkeypatch):
+        from aura import openai_atelier as oa
+
+        class FauxServeur:
+            should_exit = False
+
+        class FauxFil:
+            def __init__(self):
+                self.timeout = None
+                self.joint = False
+
+            def is_alive(self):
+                return True
+
+            def join(self, timeout=None):
+                self.timeout = timeout
+                self.joint = True
+
+        serveur, fil = FauxServeur(), FauxFil()
+        monkeypatch.setattr(oa, "_SERVEUR", serveur)
+        monkeypatch.setattr(oa.etat, "server_thread", fil)
+        monkeypatch.setattr(oa.etat, "actif", True)
+
+        etat = oa.arreter_serveur()
+
+        assert serveur.should_exit is True, "uvicorn doit recevoir l'ordre"
+        assert fil.joint and fil.timeout == 5.0
+        assert etat["actif"] is False
+        assert oa.etat.actif is False, "basculer() inversait le drapeau"
+        assert oa._SERVEUR is None
+
+
+class TestRouteMaj:
+    """`aura/maj.py` n'etait plus appele par personne : la route le rebranche."""
+
+    def test_la_route_appelle_maj_verifier(self, monkeypatch):
+        import json as _json
+        import urllib.request
+
+        from aura import maj
+
+        appels = []
+
+        def faux(*a, **k):
+            appels.append(1)
+            return {"dispo": False, "version": "0.3.0", "desactive": True}
+
+        monkeypatch.setattr(maj, "verifier", faux)
+        serveur, fil, port = api.demarrer_en_tache(port=0, precharger=False)
+        try:
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/v1/maj", timeout=10) as r:
+                corps = _json.loads(r.read().decode())
+        finally:
+            serveur.shutdown()
+            fil.join(timeout=5)
+
+        assert corps == {"dispo": False, "version": "0.3.0",
+                         "desactive": True}
+        assert appels, "la route doit appeler aura.maj.verifier"

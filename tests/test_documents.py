@@ -178,3 +178,73 @@ class TestPipeline:
         assert resultat["cerveau_choisi"] == "documents"
         assert resultat["reponse"].startswith("D'apres notes.md")
         assert "42 000" in resultat["reponse"]
+
+class TestAccesApi:
+    """Un chemin qui vient du RESEAU n'est pas un chemin tape par l'utilisateur.
+
+    `/v1/documents` acceptait n'importe quel `.txt`/`.md`/`.pdf` du disque,
+    et `/v1/ask` en recopiait des extraits : lecture de fichiers locaux
+    transformee en exfiltration. `verifier_acces` borne ce que l'API peut lire.
+    """
+
+    def _racine(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AURA_DOCS_RACINES", str(tmp_path))
+        return tmp_path
+
+    def test_fichier_sous_une_racine_autorisee(self, monkeypatch, tmp_path):
+        racine = self._racine(monkeypatch, tmp_path)
+        fichier = racine / "notes.txt"
+        fichier.write_text("le budget est de 42 000 euros", encoding="utf-8")
+        assert doc.verifier_acces(fichier) == fichier.resolve()
+
+    def test_hors_racine_refuse(self, monkeypatch, tmp_path):
+        racine = tmp_path / "docs"
+        racine.mkdir()
+        monkeypatch.setenv("AURA_DOCS_RACINES", str(racine))
+        ailleurs = tmp_path / "secret.txt"
+        ailleurs.write_text("x", encoding="utf-8")
+        with pytest.raises(PermissionError, match="racines"):
+            doc.verifier_acces(ailleurs)
+
+    def test_fichier_cache_refuse(self, monkeypatch, tmp_path):
+        racine = self._racine(monkeypatch, tmp_path)
+        caché = racine / ".env.txt"
+        caché.write_text("CLE=secret", encoding="utf-8")
+        with pytest.raises(PermissionError, match="cache"):
+            doc.verifier_acces(caché)
+
+    def test_extension_refusee(self, monkeypatch, tmp_path):
+        racine = self._racine(monkeypatch, tmp_path)
+        fichier = racine / "note.docx"
+        fichier.write_text("x", encoding="utf-8")
+        with pytest.raises(PermissionError, match="extension"):
+            doc.verifier_acces(fichier)
+
+    def test_lien_qui_sort_de_la_racine_refuse(self, monkeypatch, tmp_path):
+        racine = tmp_path / "docs"
+        racine.mkdir()
+        dehors = tmp_path / "dehors.txt"
+        dehors.write_text("x", encoding="utf-8")
+        lien = racine / "lien.txt"
+        try:
+            lien.symlink_to(dehors)
+        except (OSError, NotImplementedError):
+            pytest.skip("creation de lien symbolique impossible ici")
+        monkeypatch.setenv("AURA_DOCS_RACINES", str(racine))
+        with pytest.raises(PermissionError, match="racines"):
+            doc.verifier_acces(lien)
+
+    def test_plafond_de_taille(self, monkeypatch, tmp_path):
+        racine = self._racine(monkeypatch, tmp_path)
+        monkeypatch.setattr(doc, "TAILLE_MAX_API", 4)
+        fichier = racine / "gros.txt"
+        fichier.write_text("12345", encoding="utf-8")
+        with pytest.raises(PermissionError, match="plafond"):
+            doc.verifier_acces(fichier)
+
+    def test_dossier_refuse(self, monkeypatch, tmp_path):
+        racine = self._racine(monkeypatch, tmp_path)
+        dossier = racine / "notes.txt"          # bon suffixe, mais un dossier
+        dossier.mkdir()
+        with pytest.raises(PermissionError, match="pas un fichier"):
+            doc.verifier_acces(dossier)

@@ -556,6 +556,12 @@ def _charger():
         except Exception as e:  # profil indisponible : le chargement essaie
             LOG.debug("[profil] preflight memoire ignore : %s", e)
 
+        # INTEGRITE : un GGUF substitue est un cerveau substitue, et rien
+        # d'autre ne le verrait (le nom et la taille peuvent ne pas bouger).
+        # Le sceau est ecrit par `python -m aura.integrite --sceller`.
+        from . import integrite
+        integrite.verifier(_CHEMIN_GGUF)
+
         from llama_cpp import Llama
         # PORTEES devant le cache disque de llama.cpp : `set_cache` avec un
         # `LlamaDiskCache` doit ouvrir quatre portails (aura/garde_cache_disque.py,

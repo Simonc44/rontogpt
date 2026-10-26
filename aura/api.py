@@ -117,6 +117,7 @@ _ROUTES_PUBLIQUES = (
     "GET  /v1/memoire     fenetre de conversation + jauge de contexte",
     "GET  /v1/documents   documents locaux indexes",
     "GET  /v1/langue      langue de reponse active",
+    "GET  /v1/maj         mise a jour disponible (GitHub Releases, local)",
     "GET  /v1/cloud       etat de Gemini",
     "POST /v1/ask         question -> reponse + preuve",
     "POST /v1/ask/stream  meme chose, en flux (pensee puis reponse)",
@@ -216,7 +217,7 @@ _CLE_MINIMUM = 16
 #: peut fuiter (capture d'ecran, journal, `.env` copie), pas l'adresse source
 #: de la requete.
 _ROUTES_LOCALES = frozenset({
-    "/v1/cloud", "/v1/learn", "/v1/documents",
+    "/v1/cloud", "/v1/learn", "/v1/documents", "/v1/maj",
     "/v1/api", "/v1/api/disable", "/v1/api/deploy",
 })
 
@@ -347,6 +348,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._documents()
         if self.path == "/v1/langue":
             return self._langue()
+        if self.path == "/v1/maj":
+            return self._maj()
         if self.path == "/v1/coucou":
             from . import coucou
             return self._json({
@@ -500,6 +503,16 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(_reponse_detaille(ia, question))
         except Exception as e:                       # l'IA vit encore
             return self._json({"ok": False, "erreur": str(e)}, 500)
+
+    def _maj(self) -> None:
+        """Derniere release GitHub (aura.maj).
+
+        Route LOCALE : elle SORT sur le reseau (api.github.com). Un client
+        distant n'a pas a faire sortir la machine de son proprietaire — et
+        `AURA_MAJ=0` coupe tout, y compris ici.
+        """
+        from . import maj
+        return self._json(maj.verifier())
 
     def _langue(self) -> None:
         ia = self.etat.ia
@@ -728,10 +741,18 @@ class _Handler(BaseHTTPRequestHandler):
                 chemins = [chemins]
             if not isinstance(chemins, list) or not chemins:
                 return self._json({"ok": False, "erreur": "ajouter (liste de chemins) ou supprimer requis"}, 400)
+            if len(chemins) > documents.MAX_API:
+                return self._json({"ok": False,
+                                   "erreur": f"{documents.MAX_API} chemins au "
+                                             "maximum par requete"}, 400)
             bilans, erreurs = [], []
             for chemin in chemins:
                 try:
-                    bilans.append(documents.ajouter(str(chemin)))
+                    # VERIFIER_ACCES : ce chemin vient du RESEAU. `ajouter`
+                    # lit ce qu'on lui donne — les bornes sont ici, pas dans
+                    # le CLI ou c'est l'utilisateur qui tape le chemin.
+                    bilans.append(documents.ajouter(
+                        documents.verifier_acces(str(chemin))))
                 except (OSError, ValueError, RuntimeError) as e:
                     erreurs.append({"chemin": str(chemin), "erreur": str(e)})
             return self._json({"ok": bool(bilans), "ajoutes": len(bilans),
@@ -875,7 +896,9 @@ def demarrer_en_tache(host: str = "127.0.0.1", port: int | None = None,
     fil.start()
     if precharger:
         threading.Thread(target=etat.charger, daemon=True).start()
-    return serveur, fil, port
+    # Le port REELLEMENT pris : avec `port=0` (auto-test, tests), rendre 0
+    # obligeait l'appelant a deviner ce que le systeme avait choisi.
+    return serveur, fil, cast(tuple[str, int], serveur.server_address)[1]
 
 
 def main(argv=None) -> int:

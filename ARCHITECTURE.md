@@ -933,12 +933,27 @@ Vérifié sur une vraie socket, pas seulement en test unitaire : avec la clé,
 `/v1/config` rend `AURA_API_CLE = ***` ; `/v1/documents` répond **200** depuis
 `127.0.0.1` et **403** depuis l'adresse LAN de la machine ; sans clé, **401**.
 
-**Ce qui reste ouvert, et qui est écrit quand même** : `/v1/documents` accepte
-encore n'importe quel chemin en `.txt`/`.md`/`.pdf` (lecture de fichiers locaux,
-mais désormais impossible à distance), et la sandbox de `potcode` filtre les
-`builtins` sans filtrer les accès dunder — `().__class__.__bases__[0]` reste
-atteignable. Les deux sont les prochains blocs du durcissement, pas des
-détails.
+**Deuxième vague, même journée** — les quatre chantiers laissés ouverts :
+
+| Chantier | Ce qui a changé | Preuve |
+|---|---|---|
+| `llama-server` | Écouter hors loopback sans `AURA_SERVEUR_CLE` (≥ 16 car.) refuse de démarrer le serveur et retombe sur l'in-process ; le jeton part au binaire (`--api-key`) **et** dans nos requêtes. Si le binaire ne connaît pas `--api-key`, on renonce au chemin serveur | `AURA_SERVEUR_ADRESSE=0.0.0.0:8757` → `_demarrer()` rend False, précédé d'un `ERROR` explicite ; 7 tests |
+| `/v1/documents` | Chemins venus du **réseau** bornés : racines autorisées (dossier utilisateur, ou `AURA_DOCS_RACINES`), refus des composants cachés (`.ssh`, `.env`, `.git`), `resolve()` **avant** comparaison (un lien ne sort pas), plafond 20 Mio, 20 chemins par requête. Le CLI garde le droit de lire ce que l'utilisateur tape | 400 explicite hors racine, 200 dans la racine, 400 à 21 chemins — mesurés sur une vraie socket |
+| `potcode` | **Barrière AST** : tout nom/attribut dunder, tout `import`, et toute chaîne mêlant `{` et `__` (évasion par `str.format`) sont refusés avant `exec`. Le docstring promettait cette barrière ; le code ne l'avait pas | 5 évasions connues refusées, code ordinaire toujours accepté |
+| Intégrité | `aura/integrite.py` : SHA-256 scellé à côté du fichier, vérifié au chargement du GGUF et avant chaque `joblib.load` (routeur, classifieur flou) ; un fichier modifié **n'est pas chargé**. `AURA_INTEGRITE=0/ strict`. Mesure : 1,5 s pour 1,07 Go | Sceau rompu → `IntegriteRompue` ; `--sceller/--verifier` en CLI |
+| `arreter_serveur()` | `should_exit` est enfin posé sur le serveur uvicorn, avec `join(5 s)`. Et le retour ne passe plus par `basculer()`, qui **inversait** le drapeau et annonçait « actif » après l'arrêt | Test sur serveur factice : `should_exit`, join, état |
+| `aura/maj.py` | Rebranché sur `GET /v1/maj`, route **locale** (elle fait sortir la machine) ; `AURA_MAJ=0` coupe toujours tout | 200 en local, 403 depuis le LAN |
+
+**Couverture** : `contexte.py` (le module qui décide ce qu'on oublie) passe de
+32 % à une couverture de ses règles — estimation, saturation, groupes, sélection
+par importance et par récence, compaction minimale ; `gui.py` gagne `_envelopper`
+(le seul code testable sans écran), le reste reste à 0 % et l'assume.
+
+**Ce qui reste ouvert, écrit quand même** : la sandbox `potcode` reste du Python
+restreint, pas un bac à sable système (pas de limite mémoire, pas de séparation
+de processus) ; l'intégrité ne protège pas d'un attaquant qui tourne **déjà**
+sous ton compte, puisqu'il peut réécrire le sceau ; l'API n'a pas de limitation
+de débit.
 
 ---
 

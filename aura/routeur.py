@@ -348,8 +348,8 @@ class RouteurIntelligent:
     def _charger_ou_entrainer(self):
         if self._classifieur is not None:
             return
+        from . import integrite
         try:
-            import joblib
             v = self._dossier_cache / "vectoriseur.joblib"
             c = self._dossier_cache / "classifieur.joblib"
             if v.exists() and c.exists():
@@ -359,12 +359,17 @@ class RouteurIntelligent:
                     LOG.info("[routeur] savoir self-play -> re-entrainement")
                     self._entrainer_classifieur()
                     return
-                self._vectoriseur = joblib.load(v)
-                self._classifieur = joblib.load(c)
+                # `joblib` est du PICKLE : charger un fichier non verifie,
+                # c'est executer ce qu'il contient. Le sceau tranche.
+                self._vectoriseur = integrite.charger_joblib(v)
+                self._classifieur = integrite.charger_joblib(c)
                 LOG.info("[routeur] classifieur charge depuis le cache")
                 return
         except ImportError:
             pass
+        except integrite.IntegriteRompue as e:
+            LOG.error("[routeur] cache REFUSE (sceau rompu) : %s -> "
+                      "re-entrainement", e)
         self._entrainer_classifieur()
 
     @staticmethod

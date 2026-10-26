@@ -60,6 +60,11 @@ class AtelierEtat:
 
 etat = AtelierEtat()
 
+#: Le serveur uvicorn REEL. `arreter_serveur` ne peut pas l'arreter sans lui :
+#: `etat.actif = False` ne changeait qu'un drapeau interne, et le port restait
+#: pris jusqu'a la fin du processus.
+_SERVEUR: Optional[uvicorn.Server] = None
+
 
 # ------------------------------------------------------------
 # FastAPI / uvicorn bootstrap
@@ -152,6 +157,7 @@ def create_app() -> FastAPI:
 # Lancement du serveur
 # ------------------------------------------------------------
 def demarrer_serveur(port: int = DEFAULT_PORT, host: str = DEFAULT_HOST, cle: Optional[str] = None) -> None:
+    global _SERVEUR
     """Démarre le serveur uvicorn en thread autonome.
 
     Refuse de demarrer hors loopback sans cle : meme regle que `aura.api`
@@ -174,6 +180,7 @@ def demarrer_serveur(port: int = DEFAULT_PORT, host: str = DEFAULT_HOST, cle: Op
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
+    _SERVEUR = server
     etat.server_thread = thread
     etat.actif = True
     etat.serveur_url = f"http://{host}:{port}"
@@ -183,9 +190,26 @@ def demarrer_serveur(port: int = DEFAULT_PORT, host: str = DEFAULT_HOST, cle: Op
 
 
 def arreter_serveur() -> dict:
-    """Demande l'arret propre du serveur et renvoie l'etat final."""
-    etat.actif = False
-    return etat.basculer()
+    """Arrete VRAIMENT uvicorn, puis rend l'etat final.
+
+    Deux bugs corriges ici. 1) Le serveur uvicorn n'etait jamais arrete :
+    `etat.actif = False` ne changeait qu'un drapeau, le port restait pris.
+    2) Le retour passait par `basculer()`, qui INVERSE le drapeau : l'etat
+    annonce etait « actif » alors qu'on venait de demander l'arret.
+    """
+    global _SERVEUR
+    with etat.lock:
+        serveur, _SERVEUR = _SERVEUR, None
+        etat.actif = False
+        resultat = {"actif": False, "serveur": etat.serveur_url,
+                    "version": etat.version}
+    if serveur is not None:
+        serveur.should_exit = True
+        fil = etat.server_thread
+        if fil is not None and fil.is_alive():
+            fil.join(timeout=5.0)
+    etat.server_thread = None
+    return resultat
 
 
 # ------------------------------------------------------------

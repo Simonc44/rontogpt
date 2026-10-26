@@ -38,7 +38,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import embeddings
+from . import embeddings, integrite
 from .routeur import _probas, exemples_entrainement
 
 LOG = logging.getLogger("aura.classificateur_flou")
@@ -138,9 +138,9 @@ def _charger() -> bool:
     questions, _labels = exemples_entrainement()
     empreinte = _empreinte(questions)
     try:
-        import joblib
         if _FICHIER.exists():
-            donnees = joblib.load(_FICHIER)
+            # Sceau AVANT deserialisation : un .joblib est du pickle.
+            donnees = integrite.charger_joblib(_FICHIER)
             if (donnees.get("cle") == empreinte
                     and donnees.get("format") == _FORMAT
                     and donnees.get("backend") == _backend_voulu()):
@@ -150,6 +150,9 @@ def _charger() -> bool:
                 _cle = empreinte
                 LOG.info("[flou] modele charge depuis le cache (%s)", _backend)
                 return True
+    except integrite.IntegriteRompue as e:
+        LOG.error("[flou] modele REFUSE (sceau rompu) : %s -> "
+                  "re-entrainement", e)
     except Exception:  # noqa: BLE001
         pass
     return _entrainer()

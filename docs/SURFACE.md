@@ -1,6 +1,6 @@
 # Surface du paquet `aura`
 
-81 modules : 72 ATTEIGNABLE, 4 SCRIPTS, 4 TESTS, 1 ORPHELIN.
+82 modules : 74 ATTEIGNABLE, 4 SCRIPTS, 3 TESTS, 1 ORPHELIN.
 
 Points d'entree suivis : __init__, __main__, api, coucou, gui, kernel, superviseur, tui, winmain.
 
@@ -10,11 +10,10 @@ Points d'entree suivis : __init__, __main__, api, coucou, gui, kernel, supervise
 |---|---|---|---|
 | `instantane` | 132 | - | - |
 
-## Tests seulement (4) : non atteignables du produit ; les deplacer casse ces tests
+## Tests seulement (3) : non atteignables du produit ; les deplacer casse ces tests
 
 | module | lignes | tests | scripts |
 |---|---|---|---|
-| `maj` | 117 | test_config_api_maj.py | - |
 | `memoire_engraft` | 487 | test_memoire_engraft.py | - |
 | `rlss` | 159 | test_ameliorations.py | - |
 | `verrou` | 75 | test_ameliorations.py | - |
