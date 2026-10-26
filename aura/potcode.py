@@ -33,6 +33,7 @@ import subprocess
 import sys
 import tempfile
 import unicodedata
+from typing import Any
 
 LOG = logging.getLogger("aura.potcode")
 
@@ -192,6 +193,19 @@ def _env_enfant() -> dict[str, str]:
     return env
 
 
+def _kernel32() -> Any:
+    """La DLL noyau, sans nommer `ctypes.WinDLL` dans le code.
+
+    Les stubs de `ctypes` ne declarent `WinDLL` que sous Windows : un appel
+    direct passe sous mypy sur la machine de developpement et **casse la CI
+    Linux** (`Module has no attribute "WinDLL"`). Le `getattr` dit la verite :
+    cette branche ne s'execute que sous Windows, et le typage n'a pas a la
+    resoudre ailleurs.
+    """
+    import ctypes
+    return getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+
+
 def _job_memoire_windows(proc: subprocess.Popen) -> "object | None":
     """Job Object Windows : memoire bornee et mort avec le job.
 
@@ -233,7 +247,7 @@ def _job_memoire_windows(proc: subprocess.Popen) -> "object | None":
                         ("PeakProcessMemoryUsed", ctypes.c_size_t),
                         ("PeakJobMemoryUsed", ctypes.c_size_t)]
 
-        noyau = ctypes.WinDLL("kernel32", use_last_error=True)
+        noyau = _kernel32()
         noyau.CloseHandle.argtypes = [wintypes.HANDLE]
         noyau.AssignProcessToJobObject.argtypes = [wintypes.HANDLE,
                                                    wintypes.HANDLE]
@@ -286,8 +300,7 @@ def _executer_isole(code: str, budget: int,
             raise ValueError("delai de la sandbox depasse (code bloque)")
         finally:
             if job is not None:
-                import ctypes
-                ctypes.windll.kernel32.CloseHandle(job)
+                _kernel32().CloseHandle(job)
 
     # Le rapport est la DERNIERE ligne : une sortie parasite de l'enfant
     # (avertissement, trace) ne doit pas transformer un refus en panne.
