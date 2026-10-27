@@ -180,7 +180,7 @@ async function main(): Promise<void> {
           let couleur = DEFAULT_THEME.text;
           if (e.reponse && e.reponse.trim() !== "") affiche = e.reponse; else if (affiche === "") { affiche = "(réponse vide)"; couleur = DEFAULT_THEME.error; }
           if (e.clarification) affiche += `\n\nÀ préciser : ${e.clarification}`;
-          finalEntryId = scrollback.append({ type: "assistant", content: affiche, meta: { timestamp: new Date(), provenance: e.provenance, clarification: e.clarification } });
+          finalEntryId = scrollback.append({ type: "assistant", content: affiche, meta: { timestamp: new Date(), clarification: e.clarification } });
           if (modePlan && e.ok) enregistrerPlan(affiche);
           const pv = e.provenance;
           if (pv && e.ok) {
