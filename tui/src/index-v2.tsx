@@ -183,7 +183,19 @@ async function main(): Promise<void> {
           finalEntryId = scrollback.append({ type: "assistant", content: affiche, meta: { timestamp: new Date(), provenance: e.provenance, clarification: e.clarification } });
           if (modePlan && e.ok) enregistrerPlan(affiche);
           const pv = e.provenance;
-          if (pv && e.ok) { const signe = pv.verifie ? "✓" : pv.niveau === "inconnu" ? "?" : "•"; const ton = pv.verifie ? SEMANTIC_COLORS.verified : (pv.niveau === "inconnu" || pv.quitte_la_machine) ? SEMANTIC_COLORS.cloud : SEMANTIC_COLORS.local; scrollback.append({ type: "system", content: `${signe} ${pv.badge} — ${pv.detail}`, meta: { timestamp: new Date(), provenance: pv } }); }
+          if (pv && e.ok) {
+            const durationSec = ((Date.now() - debut) / 1000).toFixed(1);
+            // Determine model label
+            let modelLabel = "Build RontoGPT SYSTEM";
+            if (pv.niveau === "gemini" || pv.quitte_la_machine) modelLabel = "modèle gemini en ligne";
+            else if (pv.niveau === "local" || pv.badge?.includes("local")) modelLabel = "Gemma 3";
+            const grey = DEFAULT_THEME.textDim;
+            scrollback.append({
+              type: "system",
+              content: `${modelLabel} · généré en ${durationSec} s`,
+              meta: { timestamp: new Date(), provenance: pv, color: grey }
+            });
+          }
           if (e.repli_propose) { scrollback.append({ type: "system", content: "💡 /gemini pour demander à Gemini (quitte l'ordinateur)", meta: { timestamp: new Date() } }); }
           if (e.contexte?.sature) { scrollback.append({ type: "system", content: phraseContexte(e.contexte), meta: { timestamp: new Date() } }); }
           if (!e.ok && e.erreur) { scrollback.append({ type: "error", content: `Le cerveau signale : ${e.erreur}`, meta: { timestamp: new Date() } }); }
