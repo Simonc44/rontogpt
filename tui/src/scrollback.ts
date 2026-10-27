@@ -157,15 +157,9 @@ export class Scrollback {
     });
     bloc.add(content);
 
-    // Métadonnées (provenance, tokens, durée)
+    // Métadonnées (tokens, durée, tool) — provenance gérée séparément dans index-v2.tsx
     if (entry.meta) {
       const metaParts: string[] = [];
-      if (entry.meta.provenance) {
-        const { level, badge, verified } = entry.meta.provenance;
-        const icon = verified ? "✓" : level === "unknown" ? "?" : "•";
-        const tone = verified ? this.theme.success : level === "unknown" ? this.theme.warning : this.theme.textMuted;
-        metaParts.push(`${icon} ${badge}`);
-      }
       if (entry.meta.tokens) metaParts.push(`${entry.meta.tokens} tok`);
       if (entry.meta.duration) metaParts.push(`${(entry.meta.duration / 1000).toFixed(1)}s`);
       if (entry.meta.toolName) metaParts.push(`tool: ${entry.meta.toolName}`);
