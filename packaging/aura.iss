@@ -1,18 +1,20 @@
 ; =====================================================================
 ;  RontoGPT — installeur Windows (Inno Setup 6)
-;  Construit par CI (release.yml) :
-;    ISCC /DVersion=0.1.0 /DRacine=<racine du projet> packaging\aura.iss
-;  Produit : dist\RontoGPT-Setup-<version>.exe
+;  Construit par CI :  ISCC /DVersion=0.3.0 /DRacine=<racine> packaging\aura.iss
+;  Produit : dist\RontoGPT-Setup-0.3.0.exe
 ;
-;  Philosophie : l'installeur ne fait que COPIER les fichiers du projet
-;  et creer les raccourcis ; la premiere execution (post-install) appelle
-;  scripts\installer.ps1 qui construit le venv, installe les dependances
-;  et telecharge le cerveau (807 Mo) — un seul et meme code d'installation
-;  quel que soit le canal (Inno, PowerShell, git clone).
+;  L'installeur installe le PAQUET, pas la première réponse. C'est
+;  scripts\installer.ps1 qui construit le venv, installe les dépendances et
+;  télécharge le cerveau si aucun modèle n'est présent. Cet .iss ne fait que
+;  préparer les fichiers pour que ce script tourne sans terminal.
+;
+;  Écran de premier lancement : si `modeles/` est vide, le TUI affiche un
+;  écran « Bienvenue », télécharge le modèle avec une barre de progression,
+;  puis propose une première question prouvée (« 17 x 23 ? »).
 ; =====================================================================
 
 #ifndef Version
-  #define Version "0.0.0"
+  #define Version "0.3.0"
 #endif
 #ifndef Racine
   #define Racine ".."
@@ -31,7 +33,6 @@ OutputBaseFilename=RontoGPT-Setup-{#Version}
 Compression=lzma2/max
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
-; sans admin : installation utilisateur, {localappdata} pour le venv+GGUF
 PrivilegesRequired=lowest
 WizardStyle=modern
 
@@ -39,17 +40,17 @@ WizardStyle=modern
 Name: "fr"; MessagesFile: "compiler:Languages\French.isl"
 
 [Files]
-; sources + scripts (installer.ps1 s'attend a racine/scripts)
 Source: "{#Racine}\aura\*"; DestDir: "{app}\aura"; Flags: recursesubdirs ignoreversion
 Source: "{#Racine}\scripts\*"; DestDir: "{app}\scripts"; Flags: recursesubdirs ignoreversion
-Source: "{#Racine}\packaging\*"; DestDir: "{app}\packaging"; Flags: recursesubdirs ignoreversion
+Source: "{#Racine}\packaging\Lancer RontoGPT.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Racine}\pyproject.toml"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Racine}\README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-; configuration centreee (profils rapide/equilibre/qualite)
 Source: "{#Racine}\aura.toml"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
-; lanceur d'interface : %~dp0 = dossier du .bat, donc aucun chemin codé en dur
-Source: "{#Racine}\packaging\Lancer RontoGPT.bat"; DestDir: "{app}"; Flags: ignoreversion
-; le .aef chiffre s'il existe deja (sinon telechargement ulterieur)
+Source: "{#Racine}\skills.toml"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#Racine}\tui\package.json"; DestDir: "{app}\tui"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#Racine}\tui\tsconfig.json"; DestDir: "{app}\tui"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#Racine}\tui\src\*"; DestDir: "{app}\tui\src"; Flags: recursesubdirs ignoreversion skipifsourcedoesntexist
+; le .aef chiffre s'il existe déjà (sinon téléchargement ultérieur)
 Source: "{#Racine}\aura_system.aef.enc"; DestDir: "{app}"; Flags: skipifsourcedoesntexist
 Source: "{#Racine}\cle_publique.pub"; DestDir: "{app}"; Flags: skipifsourcedoesntexist
 
@@ -59,14 +60,16 @@ Name: "{autodesktop}\RontoGPT"; Filename: "{app}\Lancer RontoGPT.bat"
 Name: "{autoprograms}\Desinstaurer RontoGPT"; Filename: "{uninstallexe}"
 
 [Run]
-; premiere execution : venv + dependances + raccourci deja presents
+; 1) venv + dépendances + raccourci, sans écran.
 Filename: "powershell.exe"; \
-  Parameters: "-ExecutionPolicy Bypass -File ""{app}\scripts\installer.ps1"" -Silencieux -Destination ""{app}"""; \
-  StatusMsg: "Installation du cerveau et des dependances (2-4 min)..."; \
+  Parameters: "-ExecutionPolicy Bypass -File \""{app}\scripts\installer.ps1\"" -Silencieux -Destination \""{app}\"\""; \
+  StatusMsg: "Installation du cerveau et des dépendances (2-4 min)..."; \
   Flags: runascurrentuser postinstall skipifsilent
 
+; 2) premier lancement : écran TUI ; le .bat accepte d'être re-lancé sans re-installer.
+Filename: "Lancer RontoGPT.bat"; Parameters: ""; StatusMsg: "Lancement de RontoGPT"; Flags: nowait postinstall skipifsilent
+
 [UninstallDelete]
-; venv, cache et modele restes sur le disque apres desinstallation
 Type: filesandordirs; Name: "{app}\.venv"
 Type: filesandordirs; Name: "{app}\modeles"
 Type: filesandordirs; Name: "{app}\.cache_aef"

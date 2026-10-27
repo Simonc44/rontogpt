@@ -17,6 +17,7 @@ import types
 import pytest
 
 from aura import llama_cerveau as lc
+from aura import chargement_cerveau as cc
 from aura import profil_materiel
 
 
@@ -58,7 +59,7 @@ class TestPrechauffer:
 
 
 class TestOrdreDansCharger:
-    def test_prechauffe_apres_publication_et_avant_le_retour(self, monkeypatch):
+    def test_prechauffe_apres_publication_et_avant_le_retour(self, monkeypatch, tmp_path):
         """Le point du bug : le 1er appel UTILISATEUR doit trouver chaud.
 
         On ne teste pas llama.cpp : on remplace le modele et on verifie
@@ -67,15 +68,22 @@ class TestOrdreDansCharger:
         complet, et l'appelant ne peut pas le recevoir avant.
         """
         reglages = {"n_ctx": 4096, "n_batch": 768, "n_threads": 4,
-                    "n_threads_batch": 4, "flash_attn": True, "type_kv": 8}
+                    "n_threads_batch": 4, "flash_attn": True, "type_kv": 8,
+                    "n_gpu_layers": 0, "use_mlock": False}
         faux = FauxModele()
         vu: list[str] = []
 
-        monkeypatch.setattr(lc, "_llm", None)
-        monkeypatch.setattr(lc, "_CHEMIN_GGUF", __file__)   # existe
+        # On cree un vrai fichier GGUF factice pour passer os.path.exists
+        faux_gguf = tmp_path / "cerveau.gguf"
+        faux_gguf.write_bytes(b"GGUF")
+
+        monkeypatch.setattr(cc, "_llm", None)
+        # On patch les valeurs par defaut que _charger lit dans llama_cerveau
+        monkeypatch.setattr(lc, "_CHEMIN_GGUF", str(faux_gguf))
         monkeypatch.setattr(lc, "_reglages_materiel", lambda: dict(reglages))
-        monkeypatch.setattr(lc, "_couches_gpu", lambda: 0)
-        monkeypatch.setattr(lc, "_draft_model", lambda: None)
+        monkeypatch.setattr(lc, "famille", lambda: "test")
+        # On evite l'appel a integrite.verifier et profil_materiel.verifier_place
+        monkeypatch.setattr("aura.integrite.verifier", lambda p: None)
         monkeypatch.setattr(profil_materiel, "verifier_place",
                             lambda taille: (True, "test"))
 
@@ -88,12 +96,12 @@ class TestOrdreDansCharger:
 
         def noter_prechauffage(modele, t0):
             # a ce moment precis, le modele doit deja etre publie
-            assert lc._llm is modele
+            assert cc._llm is modele
             vu.append("prechauffage")
 
-        monkeypatch.setattr(lc, "_prechauffer", noter_prechauffage)
+        monkeypatch.setattr(cc, "_prechauffer", noter_prechauffage)
         try:
-            rendu = lc._charger()
+            rendu = cc._charger()
         finally:
             del sys.modules["llama_cpp"]
 

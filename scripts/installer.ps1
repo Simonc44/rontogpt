@@ -51,7 +51,16 @@ Write-Host "[OK] Python trouve via '$PyCmd'"
 # ---------------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $Destination | Out-Null
 
-$elements = @("aura", "scripts\telecharger_llama.py")
+$elements = @(
+    "aura",
+    "scripts\telecharger_llama.py",
+    "pyproject.toml",
+    "tui\package.json",
+    "tui\tsconfig.json",
+    "tui\src\\*",
+    "packaging\\Lancer RontoGPT.bat",
+    "skills.toml"
+)
 # Garde : si Destination == RacineProjet (installeur Inno qui appelle ce
 # script depuis {app}), la copie source->destination serait un copie sur soi.
 if ($RacineProjet -ne (Resolve-Path $Destination).Path) {
@@ -68,9 +77,13 @@ foreach ($e in $elements) {
 }
 
 # Fichiers facultatifs : presents s'ils existent (exe, .aef, .sig, cerveau)
-foreach ($f in @("dist\RontoGPT.exe", "aura_system.aef.enc", "aura_system.aef",
-                 "aura_system.aef.sig", "cle_publique.pub",
-                 ".cache_aef\cerveau.gguf")) {
+foreach ($f in @(
+    "dist\RontoGPT.exe",
+    "aura_system.aef",
+    "aura_system.aef.sig",
+    "cle_publique.pub",
+    ".cache_aef\cerveau.gguf"
+)) {
     $src = Join-Path $RacineProjet $f
     if (Test-Path $src) {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent (Join-Path $Destination $f)) | Out-Null
@@ -79,7 +92,7 @@ foreach ($f in @("dist\RontoGPT.exe", "aura_system.aef.enc", "aura_system.aef",
     }
 }
 
-# Le secret de dechiffrement, si fourni a l'installeur (env)
+# Sécurité AEF : le secret de déchiffrement n'est jamais copié depuis la racine du projet.
 if ($env:AURA_SECRET_INSTALL) {
     # .NET WriteAllText = UTF-8 sans BOM (compatible PS 5.1 et 7+)
     [System.IO.File]::WriteAllText((Join-Path $Destination "secret_aef.txt"),
@@ -102,12 +115,17 @@ Write-Host "[..] Installation des dependances (2-4 min)..."
 if ($LASTEXITCODE -ne 0) { throw "echec d'installation des dependances" }
 Write-Host "[OK] Dependances installees"
 
-# GGUF : reutiliser le cache kernel s'il a ete copie, sinon telecharger
-$GgufCache = Join-Path $Destination ".cache_aef\cerveau.gguf"
-$GgufModeles = Join-Path $Destination "modeles\Llama-3.2-1B-Instruct-Q4_K_M.gguf"
-if (-not (Test-Path $GgufCache) -and -not (Test-Path $GgufModeles)) {
-    Write-Host "[..] Telechargement du cerveau (807 Mo, 1re fois seulement)..."
-    & $VenvPy (Join-Path $Destination "scripts\telecharger_llama.py")
+# Cerveau lourd manquant : api + TUI ont besoin de llama-cpp-python ; le
+# telechargeur (telecharger_llama.py) installe sa roue CPU officielle en meme
+# temps que le GGUF, de facon idempotent (marche aussi si ce bloc echoue).
+Write-Host "[..] Cerveau (llama-cpp-python)..."
+& $VenvPy -m pip install --quiet "huggingface-hub>=0.25" `
+    "llama-cpp-python==0.3.2" `
+    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu/
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[!] cerveau non installe (voir plus haut)." -ForegroundColor Yellow
+} else {
+    Write-Host "[OK] cerveau + interface installes"
 }
 
 # ---------------------------------------------------------------
@@ -194,23 +212,39 @@ try {
 # 5. Test final : boot du .aef + reponse
 # ---------------------------------------------------------------
 Write-Host "[..] Test final..."
+$Mod = "modeles\Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+$CheminModele = Join-Path $Destination $Mod
 $FichierSecret = Join-Path $Destination "secret_aef.txt"
-if (Test-Path $FichierSecret) {
+if (Test-Path $FichierSecret -and Test-Path (Join-Path $Destination "aura_system.aef.enc")) {
     $env:AURA_SECRET = (Get-Content $FichierSecret -Raw).Trim()
-}
-$Reponse = & $VenvPy -m aura.kernel (Join-Path $Destination "aura_system.aef.enc") "quel est le carre de 7" 2>$null
-if ($Reponse -match "49") {
-    Write-Host "[OK] Test reussi : 7^2 = $Reponse" -ForegroundColor Green
+    $Reponse = & $VenvPy -m aura.kernel (Join-Path $Destination "aura_system.aef.enc") "quel est le carre de 7" 2>$null
+    if ($Reponse -match "49") {
+        Write-Host "[OK] AEF : 7^2 = $Reponse" -ForegroundColor Green
+    } else {
+        Write-Host "[!] AEF n'a pas repondu 49 (normal si .aef manquant ou corrompu)." -ForegroundColor Yellow
+    }
 } else {
-    Write-Host "[!] Le test n'a pas repondu 49 (normal si le .aef.enc est absent)." -ForegroundColor Yellow
-    Write-Host "    Le mode dev reste disponible : $RacineProjet"
+    Write-Host "[=] Pas de .aef chiffre a tester (dernier cas : AEF optionnel)." -ForegroundColor Yellow
+}
+
+if ((Test-Path $CheminModele) -and ($LASTEXITCODE -eq 0)) {
+    Write-Host "[OK] Modele présent : $Mod" -ForegroundColor Green
+} else {
+    Write-Host "[!] Modele absent ou telechargement echoue" -ForegroundColor Yellow
+}
+
+if ($(Get-Command python -ErrorAction SilentlyContinue) -and
+    $(python -c "import pyinstaller" 2>$null)) {
+    Write-Host "[OK] pyinstaller present pour la construction de l'installeur." -ForegroundColor Green
+} else {
+    Write-Host "[!] pyinstaller absent : construire l'installeur demande 'uv pip install pyinstaller'." -ForegroundColor Yellow
 }
 
 Write-Host ""
 Write-Host "=== Installation terminee ===" -ForegroundColor Cyan
 Write-Host "Ouvre une NOUVELLE fenetre PowerShell puis :"
 Write-Host '  aura "quel est le carre de 7"'
-Write-Host "Ou double-clique sur le raccourci 'RontoGPT' du Bureau (interface terminal)."
+Write-Host "Ou utilise le raccourci 'RontoGPT' du Bureau pour l'interface terminale TUI."
 Write-Host "Pour voir si une mise a jour existe :"
 Write-Host "  & `$Destination\.venv\Scripts\python.exe -m aura.maj"
 if (-not $Silencieux) { Read-Host "Entree pour fermer" }

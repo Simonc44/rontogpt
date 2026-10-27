@@ -328,8 +328,19 @@ def _algebre(question: str, historique: Any = None) -> str | None:
     x = b / a
     verif_gauche = a1 * x + b1
     verif_droite = a2 * x + b2
-    return (f"x = {_fraction(x)}\n\n"
-            f"Vérification : {_fraction(verif_gauche)} = "
+    pas = abs(a)
+    if pas == 0:
+        bis = ""
+    else:
+        bis = f"\n\nÉtapes :\nx = {b} / {a}\n"
+        bis += f"  {a1}×{x} + {b1} = {a2}×{x} + {b2}\n"
+        bis += f"  {a1}×{x} = {a2}×{x} + ({b2} - {b1})\n"
+        bis += f"  ({a1 - a2})×{x} = {b2 - b1}\n"
+        bis += f"  {a}×{x} = {b}\n"
+        bis += f"  {x} = {b} / {a}"
+    return (f"x = {_fraction(x)}"
+            + (f"\n{bis}" if bis else "")
+            + f"\n\nVérification : {_fraction(verif_gauche)} = "
             f"{_fraction(verif_droite)}.")
 
 

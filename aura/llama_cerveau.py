@@ -26,7 +26,6 @@ Optimisations d'intelligence :
 - max_tokens adaptatif : court pour les faits, long pour les explications
 - memoire de conversation (historique multi-tours) via parametre historique
 """
-import atexit
 import contextvars
 import logging
 import os
@@ -46,6 +45,21 @@ if TYPE_CHECKING:       # jamais importe au runtime : la memoire n'est qu'un typ
 from . import echantillonnage as _echantillonnage
 from . import skills as _skills
 from .prompt_systeme import systeme as _systeme_choisi
+
+# CHARGEMENT DU CERVEAU : extrait dans aura/chargement_cerveau.py pour
+# separer les responsabilites (chargement llama.cpp vs generation/flux).
+# REEXPORTE pour compatibilite : l'espace de noms reste l'API historique
+# (`llama_cerveau._llm`, `llama_cerveau._charger()`, etc.) et les
+# monkeypatches des tests continuent de fonctionner.
+from .chargement_cerveau import (  # noqa: F401
+    _llm,
+    _verrou_chargement,
+    _draft_model,
+    _prechauffer,
+    _charger,
+    decharger,
+    llm_charge,
+)
 
 # POST-TRAITEMENT DU TEXTE GENERE : dans son propre module. Ces fonctions
 # PURES (disjoncteur anti-repetition + canalisation) vivaient ici, au milieu
@@ -281,12 +295,6 @@ _MOTS_LOGIQUE = ("plus que", "moins que", "si ", "alors", "avant", "apres",
                  "pourquoi", "deduis", "en deduis", "logique", "ordre",
                  "qui est le plus", "quel age", "différence entre", "difference entre")
 
-_llm = None
-# Chargement du cerveau : un seul a la fois. L'API et les agents appellent
-# _charger() depuis plusieurs threads ; sans ce verrou, deux appels simultanes
-# construisaient DEUX modeles (~600 Mo chacun) et la memoire doublait.
-_verrou_chargement = threading.Lock()
-
 
 def _streamer(llm, messages: list[dict], max_tokens: int,
               echantillonnage: dict,
@@ -459,190 +467,6 @@ def _couches_gpu() -> int:
 def temperature(base: float | None = None) -> float:
     """Température du modèle : TOUJOURS 1.0 (arguments ignores)."""
     return 1.0
-
-
-def llm_charge():
-    """Llama charge, ou None si le modele n'est pas (encore) en memoire.
-
-    Pour le hot-swap d'adaptateurs : il faut les attrs bas niveau
-    (_model/_ctx) d'un Llama DEJA charge — jamais de chargement force
-    ici (une question qui va vers le cerveau le chargera de toute facon).
-    """
-    return _llm
-
-
-def _draft_model():
-    """Speculative decoding in-process : prompt-lookup / n-gram.
-
-    Le brouillon est extrait de l'historique lui-meme (recherche de n-grammes
-    deja vus) — AUCUN second modele, donc aucun cout de RAM de poids.
-
-    PAR DEFAUT OFF (AURA_SPEC=1 pour activer) et ce n'est pas un choix
-    esthetique : llama_cpp force logits_all=True des qu'un draft_model est
-    passe (~500 Mo de scores pour Llama-3.2-1B), et le bench mesure un
-    NET RECUL sur ce CPU :
-        AURA_SPEC=1 : 2.1 / 3.4 tok/s   (repétitif / neuf)
-        AURA_SPEC=0 : 6.0 / 8.8 tok/s
-    Le boosting reel passe par le chemin SERVEUR (--spec-type ngram-mod,
-    voir serveur_lora._spec_type_ok : +170 % sur texte repete, cout nul
-    ailleurs) qui n'a pas ce defaut. Ici l'interrupteur reste pour
-    comparer/debuguer.
-
-    Medusa / EAGLE-3 : impossibles sur Llama-3.2-1B (aucun checkpoint draft
-    converti n'existe pour cette cible) — d'ou le prompt-lookup qui, lui,
-    marche avec n'importe quel modele.
-    """
-    if os.environ.get("AURA_SPEC", "0") == "0":
-        return None
-    try:
-        from llama_cpp.llama_speculative import LlamaPromptLookupDecoding
-        return LlamaPromptLookupDecoding(max_ngram_size=2, num_pred_tokens=10)
-    except Exception as e:  # noqa: BLE001  (build sans llama_speculative)
-        LOG.warning("Speculative decoding indisponible : %s", e)
-        return None
-
-
-# PRECHAUFFAGE (AURA_PRECHUFFAGE=0 pour couper) : la TOUTE PREMIERE
-# generation qui suit le chargement d'un modele sort fausse. Mesure sur le
-# cerveau par defaut (Gemma 3 1B) : « Quelle est la capitale de la France ? »
-# renvoie une auto-description au 1er appel, puis « Paris » a tous les
-# suivants — 5 processus sur 5. Le cache KV (SWA) n'est pas encore amorce.
-# On paie donc une generation minuscule, jetee, pour que la PREMIERE question
-# de l'utilisateur tombe deja sur un modele chaud. Le chemin serveur fait
-# deja ce prechauffage (serveur_lora.rechauffer, appele par l'API et la GUI).
-def _prechauffer(modele, t0: float) -> None:
-    """Une generation minuscule et jetee, pour amorcer le cache du modele."""
-    if os.environ.get("AURA_PRECHUFFAGE", "1") == "0":
-        return
-    t1 = time.time()
-    try:
-        modele.create_chat_completion(
-            messages=[{"role": "user", "content": "Bonjour"}],
-            max_tokens=1, temperature=temperature())
-    except Exception as e:
-        # Un prechauffage qui echoue ne doit JAMAIS empecher le chargement.
-        LOG.debug("prechauffage ignore : %s", e)
-        return
-    LOG.info("prechauffage du cerveau en %.1fs (chargement %.1fs)",
-             time.time() - t1, t1 - t0)
-
-
-def _charger():
-    global _llm
-    # Double verification SOUS verrou : le 1er appel charge (2-3 s), les appels
-    # concurrents attendent puis recoivent le MEME objet — un seul modele.
-    with _verrou_chargement:
-        if _llm is not None:
-            return _llm
-        if not os.path.exists(_CHEMIN_GGUF):
-            raise FileNotFoundError(
-                f"GGUF introuvable : {_CHEMIN_GGUF}\n"
-                "Telecharge-le avec : python scripts/telecharger_llama.py\n"
-                "ou boote le .aef dont le cerveau est en cache : "
-                "python -m aura.kernel aura_system.aef")
-
-        # Le meme AEF peut embarquer Gemma 1B ou R1 1.5B. Refuser avant
-        # llama.cpp quand poids + cache KV + activations depassent la marge
-        # memoire prudente, plutot que laisser Windows finir en OOM.
-        try:
-            from . import profil_materiel as _pm
-            ok, diagnostic = _pm.verifier_place(
-                os.path.getsize(_CHEMIN_GGUF))
-            if not ok:
-                raise MemoryError(diagnostic)
-            LOG.info("[profil] memoire du cerveau : %s", diagnostic)
-        except MemoryError:
-            raise
-        except Exception as e:  # profil indisponible : le chargement essaie
-            LOG.debug("[profil] preflight memoire ignore : %s", e)
-
-        # INTEGRITE : un GGUF substitue est un cerveau substitue, et rien
-        # d'autre ne le verrait (le nom et la taille peuvent ne pas bouger).
-        # Le sceau est ecrit par `python -m aura.integrite --sceller`.
-        from . import integrite
-        integrite.verifier(_CHEMIN_GGUF)
-
-        from llama_cpp import Llama
-        # PORTEES devant le cache disque de llama.cpp : `set_cache` avec un
-        # `LlamaDiskCache` doit ouvrir quatre portails (aura/garde_cache_disque.py,
-        # avis PYSEC-2026-2447 — pickle relu depuis un dossier ou un attaquant
-        # peut ecrire). aura ne s'en sert pas ; le garde garantit que ca reste
-        # vrai, et refuse bruyamment sinon.
-        from . import garde_cache_disque
-        garde_cache_disque.installer(Llama)
-        reg = _reglages_materiel()
-        couches_gpu = _couches_gpu()
-        t0 = time.time()
-        try:
-            modele = Llama(
-                model_path=_CHEMIN_GGUF,
-                n_ctx=reg["n_ctx"],
-                n_batch=reg["n_batch"],
-                n_threads=reg["n_threads"],
-                n_threads_batch=reg["n_threads_batch"],
-                flash_attn=reg["flash_attn"],
-                type_k=reg["type_kv"],      # KV cache q8_0 : RAM /2
-                type_v=reg["type_kv"],
-                n_gpu_layers=couches_gpu,   # GPU si dispo, sinon 0 (CPU)
-                # mlock : poids verrouilles en RAM (AURA_MLOCK=0 coupe).
-                # Meme garantie cote serveur via --load-mode mmap+mlock
-                # (cf. serveur_lora._args_mlock) : le chemin ACTIF ne doit
-                # pas dependre du chemin choisi pour la residence memoire.
-                use_mlock=os.environ.get("AURA_MLOCK", "1") != "0",
-                draft_model=_draft_model(),  # spec decoding (AURA_SPEC=0 -> None)
-                verbose=False,
-            )
-        except Exception as e:
-            # ECHEC DE CHARGEMENT : le message brut de llama.cpp
-            # (« Failed to load model from file: ... ») ne dit pas QUOI
-            # faire. Le cas reellement rencontre : une version de
-            # llama-cpp-python anterieure a l'architecture du fichier
-            # (0.3.2 ne connait pas `gemma3`). On nomme la famille lue, la
-            # version installee, et la commande qui repare.
-            # Le nom de famille est calcule AVANT la f-string : un saut de
-            # ligne a l'interieur d'un champ `{...}` n'est legal qu'a partir
-            # de Python 3.12 (PEP 701). Ce fichier est declare compatible
-            # 3.11 (`requires-python`), ou cette forme est une ERREUR DE
-            # SYNTAXE — le module entier ne se compilait plus sous 3.11.
-            nom_famille = famille() or "famille inconnue"
-            raise RuntimeError(
-                f"chargement du cerveau impossible ({nom_famille} : "
-                f"{os.path.basename(_CHEMIN_GGUF)}) : {e}\n"
-                "Si l'architecture est recente (gemma3), la version de "
-                "llama-cpp-python est trop ancienne :\n"
-                "    pip install --extra-index-url "
-                "https://abetlen.github.io/llama-cpp-python/whl/cpu "
-                "llama-cpp-python==0.3.36\n"
-                "Le chemin SERVEUR (AURA_SERVEUR=1) utilise son propre "
-                "binaire llama-server et n'est pas concerne.") from e
-        _llm = modele          # publie seulement une fois COMPLETEMENT construit
-        LOG.info("cerveau %s charge en %.1fs (%s, gpu_layers=%d, spec=%s)",
-                 famille() or "?", time.time() - t0,
-                 os.path.basename(_CHEMIN_GGUF), couches_gpu,
-                 "on" if modele.draft_model is not None else "off")
-        _prechauffer(modele, t0)
-        return modele
-
-
-def decharger() -> None:
-    """Libere le cerveau et rend la RAM tout de suite (rechargement possible).
-
-    Appele automatiquement a la sortie du process : fermer explicitement la
-    session llama.cpp evite la cascade « Exception ignored in: Llama.__del__ »
-    au teardown de l'interpreteur et rend ~600 Mo au systeme immediatement.
-    """
-    global _llm
-    with _verrou_chargement:
-        modele, _llm = _llm, None
-    if modele is None:
-        return
-    try:
-        modele.close()
-    except Exception as e:          # deja ferme / backend deja demonte
-        LOG.debug("fermeture du cerveau : %s", e)
-
-
-atexit.register(decharger)
 
 
 def _formater_contexte(contexte_web: str, formule: str) -> str:

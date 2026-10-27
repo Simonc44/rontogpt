@@ -345,6 +345,7 @@ class TestRepliContexte:
                     "content": "Reponse bornee."}}]}
 
         faux = FauxLlm()
+        from aura import llama_cerveau
         monkeypatch.setattr(llama_cerveau, "_charger", lambda: faux)
         monkeypatch.setattr("aura.serveur_lora._actifs", lambda: False)
         hist = [{"role": "user", "content": "Tour un " + "x" * 150},
@@ -374,6 +375,7 @@ class TestRepliContexte:
                     "content": "Reponse sans memoire."}}]}
 
         faux = FauxLlm()
+        from aura import llama_cerveau
         monkeypatch.setattr(llama_cerveau, "_charger", lambda: faux)
         monkeypatch.setattr("aura.serveur_lora._actifs", lambda: False)
         hist = [{"role": "user", "content": "Question precedente ?"},

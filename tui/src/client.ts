@@ -66,7 +66,7 @@ export interface Final {
   ok: boolean;
   reponse: string;
   experts: string[];
-  cerveau: string;
+  cerveau?: string;
   latence: number;
   en_attente: boolean;
   clarification: string | null;
@@ -114,16 +114,14 @@ export interface InfoApi {
   version: string;
   build?: string;
   cle_requise?: boolean;
-  routes?: string[];
-  /** Racine a donner aux clients OpenAI (Open WebUI, editeurs). */
   openai?: string;
   erreur?: string;
 }
 
 /**
- * `/api` du TUI. Contrairement a `lire`, garde le corps meme sur une erreur
- * HTTP (503…) : l'utilisateur lit la RAISON, pas un « API injoignable »
- * trompeur. `null` = vraiment injoignable.
+ * `/api` du TUI. Cette API parle le protocole OpenAI (`/v1/models`,
+ * `/v1/chat/completions`) : il n'y a plus d'atelier separe a demarrer.
+ * `null` = vraiment injoignable.
  */
 export async function api(func: "status"): Promise<InfoApi | null> {
   const chemin = func === "status" ? "/v1/api" : `/v1/api/${func}`;

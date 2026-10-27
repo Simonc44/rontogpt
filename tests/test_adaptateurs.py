@@ -165,11 +165,11 @@ class TestIntegration:
         monkeypatch.setenv("AURA_ADAPTATEURS", "1")
         (tmp_path / "aura-web.gguf").write_bytes(b"x")
         monkeypatch.setattr(adaptateurs, "_DOSSIER", tmp_path)
-        from aura import llama_cerveau
+        from aura import llama_cerveau, chargement_cerveau
         monkeypatch.setattr(llama_cerveau, "generer",
                             lambda *a, **k: "ok")
         # un modele DEJA charge (le hot-swap ne charge jamais lui-meme)
-        monkeypatch.setattr(llama_cerveau, "_llm", _llm())
+        monkeypatch.setattr(chargement_cerveau, "_llm", _llm())
         ia = RontoGPT()
         ia.analyser = lambda q: {"experts": {"web"},
                                  "scores": {"web": 0.9},
@@ -182,10 +182,10 @@ class TestIntegration:
         self._neutraliser(monkeypatch)
         monkeypatch.setenv("AURA_ADAPTATEURS", "1")
         (tmp_path / "aura-math.gguf").write_bytes(b"x")
-        from aura import llama_cerveau
+        from aura import llama_cerveau, chargement_cerveau
         monkeypatch.setattr(llama_cerveau, "generer",
                             lambda *a, **k: "ok")
-        monkeypatch.setattr(llama_cerveau, "_llm", _llm())
+        monkeypatch.setattr(chargement_cerveau, "_llm", _llm())
 
         def boom(*a, **k):
             raise RuntimeError("C-API en panique")

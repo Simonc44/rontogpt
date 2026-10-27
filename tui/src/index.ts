@@ -284,10 +284,11 @@ const AIDE = [
   "Commands",
   "  /help      this screen (alias /aide)",
   "  /clear     clear the displayed thread (alias /effacer)",
-  "  /forget    the brain forgets the conversation (alias /oubli)",
-  "  /memory    what the brain keeps in mind",
+  "  /forget    the brain forgets the conversation (alias /oubli)",  "  /memory     what the brain keeps in mind",
   "  /memory set <key> = <value>   edit durable memory",
+  "  /memory add <sujet> | <relation> | <objet>   add a fact",
   "  /memory delete <key>           remove a durable memory",
+
   "  /docs add <path>               add a document (paste/drop its path)",
   "  /docs remove <name>            remove a local document",
   "  /voice on|off                  read completed answers locally",
@@ -765,8 +766,8 @@ async function traiterCloud(arguments_: string): Promise<void> {
   note(resumeCloud(r.etat), TH.ok);
 }
 
-async function traiter(brut: string): Promise<void> {
-  const texte = brut.trim();
+async function traiter(brut: string | undefined): Promise<void> {
+  const texte = (brut ?? "").trim();
   if (texte === "") return;
   const cmd = normaliser(texte);
 
@@ -807,7 +808,18 @@ async function traiter(brut: string): Promise<void> {
            r.ok ? TH.ok : TH.erreur);
       return;
     }
-    if (args) { note("Usage: /memory [set <key> = <value> | delete <key>]", TH.alerte); return; }
+    if (/^(add|a|jouter)\s+/i.test(args)) {
+      const faits = args.replace(/^(add|a|jouter)\s+/i, "").split("|").map((s) => s.trim()).filter(Boolean);
+      if (faits.length !== 3 || faits.some((s) => s.length === 0)) {
+        note("Usage: /memory add <sujet> | <relation> | <objet>", TH.alerte);
+        return;
+      }
+      const r = await editerMemoire(faits[0]!, faits[1]! + " | " + faits[2]!);
+      note(r.ok ? `Fact added: ${faits[0]} — ${faits[1]} — ${faits[2]}` : `Fact add failed: ${r.erreur}`,
+           r.ok ? TH.ok : TH.erreur);
+      return;
+    }
+    if (args) { note("Usage: /memory [set <key> = <value> | add <sujet> | <relation> | <objet> | delete <key>]", TH.alerte); return; }
     const m = await memoire();
     if (m === null) {
       note(`API unreachable on ${BASE}`, TH.erreur);
@@ -818,7 +830,7 @@ async function traiter(brut: string): Promise<void> {
       return;
     }
     const etatUtilisateur = Object.entries(m.etat).map(([k, v]) => `${k}=${v}`).join(", ");
-    const derniere = [...m.fenetre].reverse().find((t) => t.role === "user");
+    const derniere = [...m.fenetre].reverse().find((t) => t.role === "user") ?? { contenu: "" };
     const ctx = m.contexte;
     note([
       "Memory",
@@ -1077,13 +1089,12 @@ async function traiterApi(argument: string): Promise<void> {
         ? "required (X-RontoGPT-Cle or Authorization: Bearer)"
         : "none — local only (127.0.0.1)"}`,
     "",
-    ...(i.routes ?? []).map((r) => `  ${r}`),
   ].filter((l, k, tout) => l !== "" || tout[k - 1] !== "").join("\n"), TH.doux);
 }
 
 saisie.on(InputRenderableEvents.ENTER, (valeur: string) => {
   saisie.value = "";
-  void traiter(valeur);
+  void traiter(valeur.trim() ?? "");
 });
 
 // -- copier / quitter --------------------------------------------------------

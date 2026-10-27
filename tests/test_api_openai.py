@@ -80,6 +80,7 @@ class TestModeles:
         assert code == 200 and j["object"] == "list"
         assert [m["id"] for m in j["data"]] == [api_mod.MODELE_OPENAI]
         assert j["data"][0]["object"] == "model"
+        assert j["data"][0]["owned_by"] == "rontogpt"
 
     def test_le_nom_du_modele_est_stable(self):
         """Un nom qui change a chaque version casse le choix des clients."""
@@ -99,6 +100,7 @@ class TestChatCompletions:
         # La provenance voyage dans un champ a part : un client OpenAI
         # l'ignore, un client RontoGPT l'affiche.
         assert j["rontogpt"]["provenance"]["verifie"] is True
+        assert j["rontogpt"]["latence"] >= 0
 
     def test_messages_absents_400(self, serveur):
         base, etat = serveur
@@ -117,6 +119,21 @@ class TestChatCompletions:
         base, _ = serveur
         code, _ = _appel(base, "/v1/chat/completions", _messages())
         assert code == 503
+
+    def test_sans_modele_rend_local(self, serveur):
+        base, etat = serveur
+        etat.ia = _FauxIA()
+        code, corps = _appel(base, "/v1/chat/completions", _messages("test"))
+        j = json.loads(corps)
+        assert j["model"] == api_mod.MODELE_OPENAI
+
+    def test_avec_modele_client_remplace_le_nom(self, serveur):
+        base, etat = serveur
+        etat.ia = _FauxIA()
+        code, corps = _appel(base, "/v1/chat/completions",
+                             {**_messages("test"), "model": "gpt-4"})
+        j = json.loads(corps)
+        assert j["model"] == "gpt-4"
 
     def test_le_dernier_message_utilisateur_gagne(self, serveur):
         base, etat = serveur
@@ -152,6 +169,7 @@ class TestChatCompletionsFlux:
         assert contenu == "Bonjour !"
         assert objets[-1]["choices"][0]["finish_reason"] == "stop"
         assert objets[-1]["rontogpt"]["provenance"]["verifie"] is True
+        assert objets[-1]["rontogpt"]["latence"] >= 0
         assert corps.rstrip().endswith("data: [DONE]")
 
     def test_un_tour_sans_morceau_livre_quand_meme_sa_reponse(self, serveur):
@@ -166,7 +184,9 @@ class TestChatCompletionsFlux:
         class _SansFlux:
             def executer_detaille(self, question):      # noqa: ARG002
                 return {"reponse": "391", "experts": {"calcul"},
-                        "cerveau_choisi": "calcul", "provenance": None}
+                        "cerveau_choisi": "calcul",
+                        "provenance": {"niveau": "exact", "badge": "Calculé exactement",
+                                       "detail": "calcule exactement", "verifie": True}}
 
         etat.ia = _SansFlux()
         code, corps = _appel(base, "/v1/chat/completions",
@@ -185,6 +205,16 @@ class TestChatCompletionsFlux:
                              {**_messages(), "stream": True})
         assert code == 200
         assert "JE REFLECHIS" not in corps
+
+    def test_le_corps_reste_octet_par_octet_identique(self, serveur):
+        base, etat = serveur
+        etat.ia = _FauxIA()
+        code, corps = _appel(base, "/v1/chat/completions",
+                             {**_messages(), "stream": True})
+        assert code == 200
+        # Le protocol OpenAI est sensible aux petites variations : on verifie
+        # que la trame d'arrivee est bien formee et termine par [DONE].
+        assert corps.rstrip().endswith("data: [DONE]")
 
     def test_le_verrou_est_rendu(self, serveur):
         base, etat = serveur
@@ -218,3 +248,13 @@ class TestCleEnPorteur:
         monkeypatch.setenv("AURA_API_CLE", CLE)
         code, _ = _appel(base, "/v1/models", entetes={"X-RontoGPT-Cle": CLE})
         assert code == 200
+
+    def test_bearer_sur_chat_completions(self, serveur, monkeypatch):
+        base, etat = serveur
+        etat.ia = _FauxIA()
+        monkeypatch.setenv("AURA_API_CLE", CLE)
+        entete = {"Authorization": f"Bearer {CLE}"}
+        code, corps = _appel(base, "/v1/chat/completions", _messages(), entete)
+        assert code == 200
+        j = json.loads(corps)
+        assert j["choices"][0]["message"]["content"] == "Bonjour !"

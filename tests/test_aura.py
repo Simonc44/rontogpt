@@ -75,7 +75,8 @@ class TestLlamaCerveau:
         monkeypatch.setattr(serveur_lora, "_actifs", lambda: False)
         monkeypatch.setattr(llama_cerveau, "_CHEMIN_GGUF",
                             str(tmp_path / "inexistant.gguf"))
-        monkeypatch.setattr(llama_cerveau, "_llm", None)
+        from aura import chargement_cerveau
+        monkeypatch.setattr(chargement_cerveau, "_llm", None)
         r = llama_cerveau.generer("test")
         assert "pas disponible" in r or "introuvable" in r
 

@@ -32,7 +32,7 @@ async function jouer(question: string) {
   }
   const duree = (Date.now() - debut) / 1000;
   console.log(
-    `     ${formaterDuree(duree)} · cerveau=${final?.cerveau ?? "?"}`
+    `     ${formaterDuree(duree)} · cerveau=${  final?.cerveau ?? "?"}`
     + ` · morceaux=${morceaux}${phases.size ? ` (phases: ${[...phases].join("/")})` : ""}`
     + (final ? ` · reponse=${JSON.stringify(final.reponse.slice(0, 90))}` : ""),
   );
@@ -55,7 +55,7 @@ controle("/v1/status expose version + profil + budget_s",
 const a = await jouer("Combien font 47 * 3 ?");
 controle("question deterministe -> un `final` non vide",
   a.final !== null && a.erreur === null && a.final.reponse.trim() !== "",
-  a.erreur ?? `cerveau ${a.final?.cerveau}`);
+  a.erreur ?? `cerveau ${a.final?.cerveau ?? '?'}`);
 controle("la reponse de 47 * 3 contient bien 141",
   (a.final?.reponse ?? "").includes("141"), a.final?.reponse.slice(0, 40) ?? "rien");
 

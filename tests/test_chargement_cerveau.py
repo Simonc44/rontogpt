@@ -9,7 +9,7 @@ import threading
 
 import pytest
 
-from aura import llama_cerveau as lc
+from aura import chargement_cerveau as lc
 
 
 class _FauxLlama:
@@ -38,13 +38,15 @@ def cerveau_isole(monkeypatch, tmp_path):
     faux_gguf.write_bytes(b"gguf")
     _FauxLlama.construits = 0
     _FauxLlama.fermes = 0
-    monkeypatch.setattr(lc, "_CHEMIN_GGUF", str(faux_gguf))
-    monkeypatch.setattr(lc, "_reglages_materiel", lambda: {
+    # Les valeurs par defaut de _charger viennent de llama_cerveau
+    from aura import llama_cerveau
+    monkeypatch.setattr(llama_cerveau, "_CHEMIN_GGUF", str(faux_gguf))
+    monkeypatch.setattr(llama_cerveau, "_reglages_materiel", lambda: {
         "n_ctx": 8192, "n_batch": 768, "n_threads": 4,
         "n_threads_batch": 4, "flash_attn": True, "type_kv": 8,
+        "n_gpu_layers": 0, "use_mlock": False,
     })
-    monkeypatch.setattr(lc, "_couches_gpu", lambda: 0)
-    monkeypatch.setattr(lc, "_draft_model", lambda: None)
+    # Le _llm global et _charger sont dans chargement_cerveau
     monkeypatch.setattr("llama_cpp.Llama", _FauxLlama)
     monkeypatch.setattr(lc, "_llm", None)
     yield
@@ -113,6 +115,7 @@ def test_une_lecture_ratee_ne_devient_pas_definitive(monkeypatch):
     fois et 5 tests sur 1151 sont tombes, TOUS avec la meme valeur
     `'inconnu-1b'` — la trace d'un vide resservi a tout le monde.
     """
+    from aura import llama_cerveau as lc
     from aura import gguf_meta
 
     monkeypatch.setattr(lc, "_FAMILLE_CACHE", None)
