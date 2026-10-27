@@ -134,4 +134,5 @@ def provenance(resultat: dict) -> dict:
         "detail": detail,
         "verifie": niveau in _VERIFIES,
         "quitte_la_machine": niveau == "cloud",
+        "cerveau": cerveau,
     }

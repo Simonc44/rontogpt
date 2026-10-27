@@ -185,10 +185,13 @@ async function main(): Promise<void> {
           const pv = e.provenance;
           if (pv && e.ok) {
             const durationSec = ((Date.now() - debut) / 1000).toFixed(1);
-            // Determine model label
+            // Determine model label from pv.cerveau
             let modelLabel = "Build RontoGPT SYSTEM";
-            if (pv.niveau === "gemini" || pv.quitte_la_machine) modelLabel = "modèle gemini en ligne";
-            else if (pv.niveau === "local" || pv.badge?.includes("local")) modelLabel = "Gemma 3";
+            const cerveau = (pv as any).cerveau || "";
+            if (pv.quitte_la_machine || cerveau === "gemini") modelLabel = "modèle gemini en ligne";
+            else if (cerveau.includes("gemma") || pv.niveau === "local") modelLabel = "Gemma 3";
+            else if (cerveau.includes("nemotron")) modelLabel = "Nemotron 3 Ultra";
+            else if (pv.niveau === "base") modelLabel = "Base de faits locale";
             const grey = DEFAULT_THEME.textDim;
             scrollback.append({
               type: "system",
