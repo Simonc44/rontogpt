@@ -14,6 +14,7 @@
  *     la ligne brute `Sources : [titre](url)` (même partage que la GUI,
  *     `aura/gui.py::_bulle_aura`).
  */
+import { spawn } from "node:child_process";
 import {
   BoxRenderable,
   CodeRenderable,
@@ -244,6 +245,60 @@ function cadreCode(
     paddingLeft: 1,
     paddingRight: 1,
   });
+
+  // Bouton "Copier" dans le coin haut-droit du cadre
+  const btnCopier = new TextRenderable(renderer, {
+    content: " 📋 ",
+    fg: TH.discret,
+    bg: TH.codeFond,
+  });
+  btnCopier.on("click", () => {
+    // Copie via OSC 52 + fallback système
+    const code = segment.code.replace(/\s+$/, "");
+    // OSC 52 via renderer (si supporté)
+    try { (renderer as any).copyToClipboardOSC52?.(code); } catch { /* terminal sans OSC 52 */ }
+    const candidats = process.platform === "win32"
+      ? [["clip"]]
+      : process.platform === "darwin"
+        ? [["pbcopy"]]
+        : [["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]];
+    for (const [commande, ...args] of candidats) {
+      try {
+        const p = spawn(commande!, args, { stdio: ["pipe", "ignore", "ignore"] });
+        p.stdin?.end(code);
+        break;
+      } catch { /* outil suivant */ }
+    }
+    // Feedback visuel temporaire
+    const original = btnCopier.content;
+    btnCopier.content = " ✓ ";
+    btnCopier.fg = TH.ok;
+    renderer.requestRender();
+    setTimeout(() => {
+      btnCopier.content = original;
+      btnCopier.fg = TH.discret;
+      renderer.requestRender();
+    }, 1500);
+  });
+  btnCopier.on("mouseenter", () => { btnCopier.fg = TH.accent; renderer.requestRender(); });
+  btnCopier.on("mouseleave", () => { btnCopier.fg = TH.discret; renderer.requestRender(); });
+
+  // Barre de titre avec le bouton à droite
+  const titreBarre = new BoxRenderable(renderer, {
+    width: "100%",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    backgroundColor: TH.codeFond,
+    paddingLeft: 1,
+    paddingRight: 1,
+  });
+  titreBarre.add(new TextRenderable(renderer, {
+    content: ` ${segment.langue} `,
+    fg: TH.accent,
+  }));
+  titreBarre.add(btnCopier);
+
+  cadre.add(titreBarre);
   cadre.add(new CodeRenderable(renderer, {
     content: segment.code.replace(/\s+$/, ""),
     filetype: filetype(segment.langue),

@@ -76,6 +76,11 @@ const styleCode = creerStyleCode(renderer);
 let arret = false;
 let suiviEtat: ReturnType<typeof setInterval> | null = null;
 
+// -- historique des questions (buffer circulaire, max 500) ----------------
+const HISTOIRE_MAX = 500;
+const histoire: string[] = [];
+let histIndex = -1;   // -1 = saisie courante, 0 = dernière entrée, etc.
+
 const racine = new BoxRenderable(renderer, {
   width: "100%",
   height: "100%",
@@ -483,7 +488,14 @@ async function envoyer(question: string): Promise<string> {
     note("Un tour est déjà en cours — Échap pour l'interrompre.", TH.alerte);
     return "";
   }
-  derniereQuestion = question;      // ce que `/gemini` enverrait
+  // Ajouter à l'historique (éviter les doublons consécutifs)
+  const q = question.trim();
+  if (q && (histoire.length === 0 || histoire[histoire.length - 1] !== q)) {
+    histoire.push(q);
+    if (histoire.length > HISTOIRE_MAX) histoire.shift();
+  }
+  histIndex = -1; // reset navigation
+  derniereQuestion = q;
   const { puce, attente, corps, meta } = tour(question);
   // Le fil affiche la question REELLE ; le cerveau recoit la consigne de
   // plan en plus, uniquement quand le mode plan est actif.
@@ -1152,6 +1164,33 @@ function quitter(): void {
 }
 
 renderer.keyInput.on("keypress", (key) => {
+  // Navigation dans l'historique (↑/↓) — seulement si la saisie a le focus
+  if ((key.name === "up" || key.name === "down") && saisie.focused) {
+    if (histoire.length === 0) return;
+
+    if (key.name === "up") {
+      // Vers le passé : index augmente
+      const nouveau = histIndex === -1 ? histoire.length - 1 : Math.min(histIndex + 1, histoire.length - 1);
+      if (nouveau !== histIndex) {
+        histIndex = nouveau;
+        saisie.value = histoire[histoire.length - 1 - histIndex] as string;
+        renderer.requestRender();
+      }
+      return;
+    }
+    if (key.name === "down") {
+      // Vers le futur : index diminue
+      if (histIndex === -1) return; // déjà à la saisie courante
+      const nouveau = Math.max(histIndex - 1, -1);
+      if (nouveau !== histIndex) {
+        histIndex = nouveau;
+        saisie.value = (histIndex === -1 ? "" : histoire[histoire.length - 1 - histIndex]) as string;
+        renderer.requestRender();
+      }
+      return;
+    }
+  }
+
   if (key.name === "escape") {
     if (quitterDemande) {
       annulerQuitter(true);      // Échap annule la demande de sortie…
