@@ -25,7 +25,7 @@ _RACINE = Path(__file__).resolve().parent.parent        # racine du projet
 _TUI = _RACINE / "tui"
 _BUN = _TUI / "node_modules" / "bun" / "bin" / "bun.exe"
 _BUN_NIX = _TUI / "node_modules" / ".bin" / "bun"
-_INDEX = _TUI / "src" / "index.ts"
+_INDEX = _TUI / "src" / "index-v2.tsx"
 
 PORT = int(os.environ.get("AURA_API_PORT", "8760"))
 URL = os.environ.get("AURA_API_URL", f"http://127.0.0.1:{PORT}")

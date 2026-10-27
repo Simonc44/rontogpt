@@ -6,6 +6,7 @@
   "description": "Interface terminal (OpenTUI) de RontoGPT : parle au cerveau Python via l'API locale aura/api.py.",
   "scripts": {
     "start": "bun src/index-v2.tsx",
+    "start:node": "npx tsx src/index-v2.tsx",
     "check": "tsc --noEmit",
     "smoke": "bun src/smoke.ts",
     "smoke:attente": "bun src/smoke_attente.ts",

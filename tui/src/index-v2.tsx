@@ -36,12 +36,18 @@ let quitterMinuteur: ReturnType<typeof setTimeout> | null = null;
 interface TachePlan { texte: string; faite: boolean }
 let planActif: TachePlan[] = [];
 
-const scrollback = new Scrollback(DEFAULT_THEME);
+let scrollback: Scrollback;
 let footer: Footer;
+// Le titre de l'en-tete est cree dans main() (le renderer doit exister), mais
+// `majTitre` est appele par `majEntete`, qui vit HORS de main(). Il faut donc
+// une reference de module : sinon `majTitre` n'existe pas dans sa portee et le
+// demarrage mourait sur « ReferenceError: majTitre is not defined ».
+let enteteTitre: { content: string } | null = null;
 
 async function main(): Promise<void> {
   await initializeRenderer();
 
+  scrollback = new Scrollback(DEFAULT_THEME);
   footer = new Footer({
     onSubmit: envoyer,
     onInterrupt: () => { if (enVol !== false) enVol.abort(); },
@@ -66,7 +72,7 @@ async function main(): Promise<void> {
   const entete = new BoxRenderable(renderer, {
     width: "100%", height: 3, flexDirection: "column", paddingLeft: 1, paddingTop: 1, backgroundColor: DEFAULT_THEME.background,
   });
-  const enteteTitre = new TextRenderable(renderer, { content: "", fg: DEFAULT_THEME.text });
+  enteteTitre = new TextRenderable(renderer, { content: "", fg: DEFAULT_THEME.text });
   const enteteDossier = new TextRenderable(renderer, { content: "", fg: DEFAULT_THEME.textDim });
   entete.add(enteteTitre); entete.add(enteteDossier); racine.add(entete);
 
@@ -80,10 +86,6 @@ async function main(): Promise<void> {
   }
   majDossier(); renderer.on("resize", majDossier);
 
-  function majTitre(version: string | null): void {
-    if (arret || renderer.isDestroyed) return;
-    enteteTitre.content = version ? `>_ RontoGPT ${version}` : `>_ RontoGPT`;
-  }
   majTitre(null);
 
   // Écran d'accueil
@@ -104,13 +106,6 @@ async function main(): Promise<void> {
 
   function montrerFil(): void { if (!scrollback.element.visible) { accueil.visible = false; scrollback.element.visible = true; } }
   function montrerAccueil(): void { scrollback.element.visible = false; accueil.visible = true; }
-
-  function flash(texte: string, couleur: string, duree = 1500): void {
-    if (arret || renderer.isDestroyed) return;
-    flashActif = true; footer.flash(texte, couleur, duree);
-    if (flashMinuteur !== null) clearTimeout(flashMinuteur);
-    flashMinuteur = setTimeout(() => { flashMinuteur = null; flashActif = false; }, duree);
-  }
 
   function copier(texte: string): void {
     try { renderer.copyToClipboardOSC52(texte); } catch { }
@@ -276,14 +271,28 @@ async function main(): Promise<void> {
   });
 
   // Démarrage
-  const santeInfo = await sante(); if (santeInfo === null) { majEntete(null, ` — lance :  uv run rontogpt`); } else { majEntete(await etat()); }
+  try {
+    const santeInfo = await sante();
+    if (santeInfo === null) { majEntete(null, ` — lance :  uv run rontogpt`); }
+    else { majEntete(await etat()); }
+  } catch (e) {
+    majEntete(null, ` — erreur: ${e}`);
+  }
 
-  suiviEtat = setInterval(() => { if (arret || renderer.isDestroyed) return; void etat().then((info) => majEntete(info)); if (enVol === false) void memoire().then((m) => majJauge(m?.contexte)); }, 5000);
+  suiviEtat = setInterval(() => {
+    if (arret || renderer.isDestroyed) return;
+    etat().then((info) => majEntete(info)).catch((e) => console.error("[TUI] etat error:", e));
+    if (enVol === false) memoire().then((m) => majJauge(m?.contexte)).catch((e) => console.error("[TUI] memoire error:", e));
+  }, 5000);
 
   if (process.argv.includes("--smoke")) { const question = process.env.AURA_TUI_SMOKE_Q ?? "Combien font 6 * 7 ?"; const reponse = await envoyer(question); await new Promise((r) => setTimeout(r, 1500)); const blocs = scrollback.length; arret = true; if (suiviEtat !== null) clearInterval(suiviEtat); destroyRenderer(); console.log(`[smoke] écran monté · ${blocs} bloc(s) dans le fil · question : ${question} · réponse affichée : ${JSON.stringify(reponse.slice(0, 120))}`); process.exit(blocs >= 2 && reponse.trim() !== "" ? 0 : 1); }
 }
 
-// Wrappers pour les fonctions existantes (identiques à l'ancien index.ts)
+// Wrappers pour les fonctions existantes (identiques à l'ancien index.ts).
+// Ils vivent HORS de main() : tout ce qu'ils appellent doit donc etre defini
+// au niveau du module, pas dans la portee de main().
+function majTitre(version: string | null): void { if (arret || renderer.isDestroyed || enteteTitre === null) return; enteteTitre.content = version ? `>_ RontoGPT ${version}` : `>_ RontoGPT`; }
+function flash(texte: string, couleur: string, duree = 1500): void { if (arret || renderer.isDestroyed) return; flashActif = true; footer.flash(texte, couleur, duree); if (flashMinuteur !== null) clearTimeout(flashMinuteur); flashMinuteur = setTimeout(() => { flashMinuteur = null; flashActif = false; }, duree); }
 function majEntete(info: InfoEtat | null, nota = ""): void { if (arret || renderer.isDestroyed) return; if (info === null) { majTitre(null); etatBase = `hors ligne${nota}`; couleurEtat = DEFAULT_THEME.error; footer.setStatus("error", etatBase); return; } majTitre(info.version); etatBase = info.chargement ? "chargement…" : (modePlan ? "plan mode" : ""); couleurEtat = DEFAULT_THEME.warning; footer.setStatus("idle", etatBase); }
 function majJauge(contexte: EtatContexte | null | undefined): void { jaugeContexte = contexte ? `contexte ${contexte.pourcentage} %` : ""; footer.setContextPercent(contexte?.pourcentage ?? 0); }
 function phraseContexte(c: EtatContexte): string { const retires = c.compacte ?? 0; const detail = retires > 0 ? `${retires} older message(s) compacted, ${c.gardes ?? 0} kept` : c.raison === "fenetre minimale" ? "nothing older to compact — the next answer may be truncated" : c.raison === "echec compaction" ? "compaction failed — the next answer may be truncated" : c.raison === "hors memoire" ? "memory is empty, but the system/web context alone is still full" : "no message removed"; const apres = c.apres !== undefined ? `, now ${c.apres}%` : ""; return `Context ${c.pourcentage}% full (${c.tokens}/${c.budget} tokens, ${c.mode ?? "importance"}) — ${detail}${apres}.`; }
