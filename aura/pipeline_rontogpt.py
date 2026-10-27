@@ -225,17 +225,28 @@ class PipelineMixin:
         llama_cerveau.poser_echeance(deadline)
         try:
             resultat = self._executer_detaille(question, X, y, t0)
-            # AIGUILLEUR (opt-in, GOOGLE_API_KEY) : il lit la TACHE demandee
-            # (dissertation, traduction...) et la REPONSE rendue (vide, refus,
-            # boucle, mauvaise langue, fait devine sans source...), puis decide
-            # de garder le petit modele local ou de passer la main au renfort
-            # distant (cf. aura/aiguilleur.py). Un tier exact ou verifie n'est
-            # jamais rejuge ; sans cible disponible, rien ne part.
+            # AIGUILLEUR (opt-in, GOOGLE_API_KEY / NVIDIA NIM) : il lit la TACHE
+            # demandee (dissertation, traduction...) et la REPONSE rendue (vide,
+            # refus, boucle, mauvaise langue, fait devine sans source...), puis
+            # decide de garder le petit modele local ou de passer la main au
+            # renfort distant (cf. aura/aiguilleur.py). Un tier exact ou verifie
+            # n'est jamais rejuge ; sans cible disponible, rien ne part.
             try:
                 from . import aiguilleur, gemini
+                # Import optionnel de nemotron (nécessite openai)
+                nemotron = None
+                try:
+                    from . import nemotron as _nemotron
+                    nemotron = _nemotron
+                except Exception:
+                    pass
                 categorie = getattr(self, "_derniere_categorie", None)
                 decision = aiguilleur.decider(question, resultat, categorie)
-                if decision.escalader and _mode_cloud() == "oui":
+                mode_cloud = _mode_cloud()
+                # Backwards compat: "oui" -> "gemini"
+                if mode_cloud == "oui":
+                    mode_cloud = "gemini"
+                if decision.escalader and mode_cloud == "gemini":
                     texte = gemini.repondre(
                         question,
                         contexte_web=str(resultat.get("contexte_web") or ""),
@@ -254,6 +265,35 @@ class PipelineMixin:
                         self._consolider_repli(question, texte)
                     else:
                         resultat["repli_echec"] = gemini.derniere_erreur()
+                elif decision.escalader and mode_cloud == "nemotron":
+                    if nemotron is not None:
+                        try:
+                            client = nemotron.NemotronClient("default")
+                            texte = client.repondre(
+                                question,
+                                contexte_web=str(resultat.get("contexte_web") or ""),
+                                formule=str(resultat.get("formule") or ""),
+                                max_tokens=4096)
+                        except Exception as e:
+                            LOG.warning("[aiguilleur] nemotron error: %s", e)
+                            texte = None
+                        if texte:
+                            LOG.info("[aiguilleur] %s (%s) : %s -> nemotron",
+                                     decision.raison, decision.moment,
+                                     resultat.get("cerveau_choisi"))
+                            resultat["repli"] = {
+                                "fournisseur": "nemotron",
+                                "raison": decision.raison,
+                                "moment": decision.moment,
+                                "reponse_locale": str(resultat.get("reponse") or "")}
+                            resultat["reponse"] = texte
+                            resultat["cerveau_choisi"] = "nemotron"
+                            self._consolider_repli(question, texte)
+                        else:
+                            resultat["repli_echec"] = "Nemotron indisponible ou erreur"
+                    else:
+                        LOG.warning("[aiguilleur] nemotron requested but not available (openai not installed)")
+                        resultat["repli_echec"] = "Nemotron non disponible (openai manquant)"
                 elif decision.escalader and _mode_cloud() == "demander":
                     # RIEN NE PART : on PROPOSE. La reponse locale reste la
                     # reponse ; l'interface montre un bouton « Demander a

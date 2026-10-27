@@ -82,14 +82,14 @@ class Decision:
     escalader: bool
     raison: str | None = None
     moment: str = ""            # "reponse" | "tache" | ""
-    fournisseur: str = "local"  # "gemini" | "local"
+    fournisseur: str = "local"  # "gemini" | "nemotron" | "local"
 
 
 _LOCAL = Decision(False)
 
 
-def _escalader(raison: str, moment: str) -> Decision:
-    return Decision(True, raison, moment, "gemini")
+def _escalader(raison: str, moment: str, fournisseur: str = "gemini") -> Decision:
+    return Decision(True, raison, moment, fournisseur)
 
 
 def _env(nom: str, defaut: str = "") -> str:
@@ -107,10 +107,37 @@ def _regles_actives() -> set[str]:
     return (choisies & set(REGLES)) if choisies else set(REGLES)
 
 
+def _mode_cloud() -> str:
+    """Quel mode cloud utiliser : 'gemini', 'nemotron', 'demander', 'non'."""
+    v = os.environ.get("AURA_CLOUD", "demander").strip().lower()
+    return v if v in ("gemini", "nemotron", "demander", "non", "oui") else "demander"
+
+
+def _mode_cloud_nemotron() -> bool:
+    """Vrai si on doit utiliser Nemotron 3 Ultra via NVIDIA NIM."""
+    return _mode_cloud() == "nemotron"
+
+
 def disponible() -> bool:
     """Vrai si l'escalade peut aboutir maintenant (cible configuree, pas en pause)."""
-    from . import gemini  # import local : gemini ne depend pas de l'aiguilleur
-    return gemini.disponible()
+    from . import gemini
+    # Import optionnel de nemotron (nécessite openai)
+    try:
+        from . import nemotron
+        nemotron_ok = True
+    except Exception:
+        nemotron_ok = False
+    
+    mode = _mode_cloud()
+    if mode == "gemini":
+        return gemini.disponible()
+    if mode == "nemotron":
+        if nemotron_ok:
+            return nemotron.nemotron_disponible("default")
+        return False
+    # mode "demander" ou "oui" -> au moins un des deux
+    nemotron_dispo = nemotron_ok and nemotron.nemotron_disponible("default")
+    return gemini.disponible() or nemotron_dispo
 
 
 # -- le jugement : DETERMINISTE ----------------------------------------------
@@ -263,12 +290,16 @@ def decider(question: str, resultat: dict,
         return _LOCAL
     actives = _regles_actives()
     reponse = str(resultat.get("reponse") or "")
+    fournisseur = _mode_cloud() if _mode_cloud() in ("gemini", "nemotron") else "gemini"
+
+    def _escalader_mode(raison: str, moment: str) -> Decision:
+        return _escalader(raison, moment, fournisseur)
 
     # Rien a conserver : quel que soit le tier.
     if not reponse.strip():
-        return _escalader("vide", "reponse") if "vide" in actives else _LOCAL
+        return _escalader_mode("vide", "reponse") if "vide" in actives else _LOCAL
     if reponse.startswith("[RontoGPT]"):
-        return _escalader("erreur", "reponse") if "erreur" in actives else _LOCAL
+        return _escalader_mode("erreur", "reponse") if "erreur" in actives else _LOCAL
 
     # Une relance de clarification n'est pas une reponse faible. Un tier exact
     # ou verifie n'est jamais rejuge, pas plus qu'un resultat [Code]/[Logique]
@@ -285,39 +316,39 @@ def decider(question: str, resultat: dict,
 
     if len(reponse) < _AVEU_MAX_CAR:
         if "refus" in actives and _RE_REFUS.search(r):
-            return _escalader("refus", "reponse")
+            return _escalader_mode("refus", "reponse")
         if "aveu" in actives and _RE_AVEU.search(r):
-            return _escalader("aveu", "reponse")
+            return _escalader_mode("aveu", "reponse")
     if "boucle" in actives and _en_boucle(reponse):
-        return _escalader("boucle", "reponse")
+        return _escalader_mode("boucle", "reponse")
     if "echo" in actives and _est_echo(question, reponse):
-        return _escalader("echo", "reponse")
+        return _escalader_mode("echo", "reponse")
     if ("court" in actives and _RE_OUVERTE.search(q)
             and _mots(reponse) < _COURT_MIN_MOTS):
-        return _escalader("court", "reponse")
+        return _escalader_mode("court", "reponse")
     if ("redaction" in actives and _RE_LONGUE.search(q)
             and len(reponse) <= _REDACTION_MIN_CAR):
-        return _escalader("redaction", "reponse")
+        return _escalader_mode("redaction", "reponse")
     if "langue" in actives and _mauvaise_langue(question, reponse):
-        return _escalader("langue", "reponse")
+        return _escalader_mode("langue", "reponse")
     if ("probleme" in actives and sans_formule
             and not _RE_CODE.search(q)
             and _mots(question) >= _PROBLEME_MIN_MOTS
             and len(_RE_NOMBRE.findall(question)) >= 2):
-        return _escalader("probleme", "reponse")
+        return _escalader_mode("probleme", "reponse")
     if ("factuel" in actives and sans_source and sans_formule
             and _RE_FACTUEL.search(q)):
-        return _escalader("factuel", "reponse")
+        return _escalader_mode("factuel", "reponse")
 
     # La TACHE demandee excede-t-elle ce que le petit modele sait faire ?
     tache = _tache_faible(question, actives)
     if tache:
-        return _escalader(tache, "tache")
+        return _escalader_mode(tache, "tache")
 
     if ("domaine" in actives and categorie
             and categorie in _liste("AURA_AIGUILLEUR_DOMAINES",
                                     "AURA_GEMINI_DOMAINES")):
-        return _escalader("domaine", "reponse")
+        return _escalader_mode("domaine", "reponse")
     return _LOCAL
 
 

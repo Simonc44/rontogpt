@@ -235,6 +235,46 @@ def version() -> str:
     return "0.0.0"
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Clé API NVIDIA NIM (Nemotron 3 Ultra) — stockage utilisateur local
+# ──────────────────────────────────────────────────────────────────────────────
+
+_NVIDIA_KEY_FILE = _RACINE / ".nvidia_key.json"
+
+
+def get_user_nvidia_key(user_id: str = "default") -> str | None:
+    """Récupère la clé API NVIDIA NIM de l'utilisateur.
+    
+    Priorité : variable d'env AURA_NVIDIA_KEY > fichier local .nvidia_key.json
+    """
+    # 1. Variable d'environnement
+    env_key = os.environ.get("AURA_NVIDIA_KEY", "").strip()
+    if env_key:
+        return env_key
+    # 2. Fichier local (JSON: {"default": "key", "user2": "key2"})
+    try:
+        if _NVIDIA_KEY_FILE.is_file():
+            import json
+            data = json.loads(_NVIDIA_KEY_FILE.read_text(encoding="utf-8"))
+            return data.get(user_id)
+    except Exception:
+        pass
+    return None
+
+
+def set_user_nvidia_key(user_id: str, key: str) -> None:
+    """Sauvegarde la clé API NVIDIA NIM pour un utilisateur."""
+    data = {}
+    try:
+        if _NVIDIA_KEY_FILE.is_file():
+            import json
+            data = json.loads(_NVIDIA_KEY_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    data[user_id] = key.strip()
+    _NVIDIA_KEY_FILE.write_text(json.dumps(data), encoding="utf-8")
+
+
 def main(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(
